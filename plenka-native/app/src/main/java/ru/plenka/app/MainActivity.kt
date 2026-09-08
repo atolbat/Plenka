@@ -91,7 +91,7 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "PLENKA"
         private const val PORT = 8977
-        private const val APP_VERSION = "PLENKA native 3.15 (v62)"
+        private const val APP_VERSION = "PLENKA native 3.16 (v63)"
         private const val RC_PERM = 7
         private const val RC_PICK = 8
         private const val RC_FILE = 9
@@ -376,7 +376,7 @@ class MainActivity : Activity() {
 
         // сервер уже слушает (bind синхронный в start()) — страница не получит connection refused
         webView.loadUrl("http://127.0.0.1:$PORT/")
-        Log.i(TAG, "native 3.15 started, version=$APP_VERSION sdk=${Build.VERSION.SDK_INT}")
+        Log.i(TAG, "native 3.16 started, version=$APP_VERSION sdk=${Build.VERSION.SDK_INT}")
 
         // 2.1: право просит сама оболочка, не полагаясь на цепочку страница→мост
         maybeAskPerm()
