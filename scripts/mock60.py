@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Мок сервера ПЛЁНКА 3.12 (v58): / → v57, /seek → стенд v51, /lab → лаба v51,
+"""Мок сервера ПЛЁНКА 3.13 (v60, dev WebGL): / → v57, /seek → стенд v51, /lab → лаба v51,
 /__medialist, /__srvlog; /t/v/1 → X-Plenka-FrameT:0, /t/v/2 → 3600000.
 Мост-мок 3.12: журнал mediaState/setPipAuto, __mockBgSet(true/false) —
 эмуляция document.hidden + visibilitychange. Сервер живёт между
@@ -9,7 +9,7 @@ import http.server, socketserver, json, os, re, sys, threading, time
 
 PORT = 8977
 ROOT = '/home/z/my-project'
-HTML = os.path.join(ROOT, 'download', 'plenka-optimized-59.html')
+HTML = os.path.join(ROOT, 'download', 'plenka-optimized-60.html')
 SEEK = os.path.join(ROOT, 'scripts', 'from_chat_plenka-seek-v51.html')
 LAB = os.path.join(ROOT, 'scripts', 'from_chat_plenka-lab-v51.html')
 FILES = {
@@ -67,7 +67,7 @@ BRIDGE = r"""
     requestPerm:arity0('requestPerm',function(){return true}),
     permState:arity0('permState',function(){return JSON.stringify({state:'ok',sdk:34})}),
     pickedList:arity0('pickedList',function(){return '[]'}),
-    version:arity0('version',function(){return 'PLENKA native 3.13 (v59, MOCK)'}),
+    version:arity0('version',function(){return 'PLENKA native 3.13 (v60, MOCK)'}),
     isPip:arity0('isPip',function(){return false}),
     pipExit:arity0('pipExit',function(){return true}),
     exitApp:arity0('exitApp',function(){return true}),
@@ -214,5 +214,5 @@ class TS(socketserver.ThreadingTCPServer):
 
 if __name__ == '__main__':
     with TS(('127.0.0.1', PORT), H) as httpd:
-        print('mock 3.13 on http://127.0.0.1:%d/ (v59)' % PORT, flush=True)
+        print('mock 3.13/v60-dev on http://127.0.0.1:%d/ (v60, WebGL)' % PORT, flush=True)
         httpd.serve_forever()
