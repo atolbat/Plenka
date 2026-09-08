@@ -1,0 +1,1029 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>ПЛЁНКА · видео-лаборатория</title>
+<style>
+:root{--bg:#120f0a;--pan:#1c1710;--pan2:#251e14;--tx:#e8dcc2;--mut:#9c8b66;--acc:#e8a33d;--ok:#7fc97f;--bad:#e07a5f;--mono:ui-monospace,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 system-ui,-apple-system,sans-serif;padding:10px 10px 40px}
+h1{font-size:17px;margin:4px 0 2px}.sub{color:var(--mut);font-size:12px;margin-bottom:10px}
+.card{background:var(--pan);border:1px solid #322818;border-radius:10px;padding:10px;margin:10px 0}
+.card h2{font-size:14px;margin:0 0 8px;color:var(--acc)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
+label{font-size:12px;color:var(--mut)}
+input,select{background:var(--pan2);border:1px solid #3a2f1d;color:var(--tx);border-radius:7px;padding:7px 9px;font:13px var(--mono);width:110px}
+input.wide{width:100%}
+button{background:var(--acc);color:#241a06;border:0;border-radius:8px;padding:9px 14px;font-weight:600;font-size:13px;cursor:pointer}
+button.sec{background:var(--pan2);color:var(--tx);border:1px solid #3a2f1d}
+button.stop{background:var(--bad);color:#fff}
+button:disabled{opacity:.45;cursor:default}
+pre,textarea{background:#0d0a07;border:1px solid #322818;border-radius:8px;color:#cfc3a0;font:11.5px/1.45 var(--mono);padding:8px;white-space:pre-wrap;word-break:break-all;margin:6px 0}
+textarea{width:100%;min-height:180px}
+table{width:100%;border-collapse:collapse;font:12px var(--mono)}
+th,td{border:1px solid #322818;padding:5px 6px;text-align:left;vertical-align:top}
+th{color:var(--mut);font-weight:600;background:#181209}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.mut{color:var(--mut)}
+video#pv{width:100%;max-width:340px;background:#000;border-radius:8px;display:block}
+.tag{display:inline-block;border:1px solid #3a2f1d;border-radius:5px;padding:1px 6px;font:11px var(--mono);color:var(--mut);margin-right:4px}
+#journal{max-height:260px;overflow:auto}
+.stname{font-weight:700}.dots{color:var(--mut)}
+.res-note{font-size:11px;color:var(--mut)}
+</style>
+</head>
+<body>
+<h1>ПЛЁНКА · видео-лаборатория</h1>
+<div class="sub">стенд для «медленных» видео: разбор файла → стратегии загрузки → отчёт. Открывается на устройстве рядом с приложением (тот же сервер 127.0.0.1:8977).</div>
+
+<div class="card">
+ <h2>Цель</h2>
+ <div class="row">
+  <label>путь</label><input id="fId" value="77">
+  <label>длит., сек (0 — не знаю)</label><input id="fDur" value="0">
+ </div>
+ <div class="row">
+  <label>таймаут этапа, сек</label><input id="fTmo" value="30" style="width:60px">
+  <label>чанк MSE, МБ</label><input id="fChunk" value="2" style="width:60px">
+ </div>
+ <div class="row">
+  <button id="bDiag">Разобрать файл</button>
+  <button id="bRun">Все тесты</button>
+  <button id="bStop" class="stop" disabled>Стоп</button>
+ </div>
+ <div id="diagOut"></div>
+</div>
+
+<div class="card">
+ <h2>Превью тестируемого элемента</h2>
+ <video id="pv" muted playsinline preload="none"></video>
+ <div id="pvNote" class="res-note">здесь живёт видео текущей стратегии</div>
+</div>
+
+<div class="card">
+ <h2>Результаты</h2>
+ <div id="resOut"><div class="mut">ещё не запускалось</div></div>
+ <div class="row"><button id="bCopy" class="sec">Скопировать отчёт</button></div>
+ <textarea id="report" spellcheck="false" placeholder="отчёт появится здесь"></textarea>
+</div>
+
+<div class="card">
+ <h2>Журнал</h2>
+ <pre id="journal"></pre>
+</div>
+
+<script>
+/* ═══════════════════════ видео-лаборатория ПЛЁНКА ═══════════════════════
+   Цель: понять, ПОЧЕМУ гигантский mp4 не открывается в Chromium/WebView, и
+   найти способ открывать его мгновенно. Всё на fetch + <video> + MSE.
+   Авто-режим: ?auto=1&id=77&dur=3600 — прогон всего, отчёт в window.__labDone. */
+var Q=new URLSearchParams(location.search);
+var STATE={stop:false,running:false,results:[],journal:[],diag:null,srv:null,diagReqs:0,diagBytes:0};
+function $(s){return document.querySelector(s)}
+function log(s){
+  STATE.journal.push(s);
+  var j=$('#journal'); if(j){ j.textContent=STATE.journal.slice(-400).join('\n'); j.scrollTop=1e9; }
+}
+function fmtB(n){ if(n>=1048576)return (n/1048576).toFixed(1)+'МБ'; if(n>=1024)return Math.round(n/1024)+'КБ'; return n+'Б' }
+function fmtMs(n){ if(n==null)return '—'; if(!isFinite(n))return '∞'; return n<1000?Math.round(n)+'мс':(n/1000).toFixed(n<10000?2:1)+'с' }
+function sleep(ms){ return new Promise(function(r){setTimeout(r,ms)}) }
+function once(el,ev,ms){
+  return new Promise(function(res){
+    var to=setTimeout(function(){clean();res('timeout')},ms||5000);
+    function h(){ clean(); res(ev) }
+    function clean(){ clearTimeout(to); el.removeEventListener(ev,h) }
+    el.addEventListener(ev,h);
+    if(Array.isArray(ev)){ ev.forEach(function(e){el.removeEventListener(e,h);el.addEventListener(e,h)}) }
+  });
+}
+function urlBase(){ return location.origin }
+function mediaUrl(){ return urlBase()+'/v/'+($('#fId').value||Q.get('id')||'77') }
+function durHint(){ var d=parseFloat($('#fDur').value||Q.get('dur')||'0'); return isFinite(d)&&d>0?d:0 }
+function tmoMs(){ var t=parseFloat($('#fTmo').value||'30'); return (isFinite(t)&&t>3?t:30)*1000 }
+function chunkBytes(){ var c=parseFloat($('#fChunk').value||'2'); return Math.max(262144,Math.min(16777216,(isFinite(c)?c:2)*1048576)) }
+
+/* ═══════════ fetch с Range + учёт ═══════════ */
+var REQ={n:0,bytes:0,t0:performance.now()};
+function fetchRange(url,start,len,opt){
+  opt=opt||{};
+  if(!isFinite(start)||!isFinite(len)||start<0||len<=0)throw new Error('fetchRange: дикий диапазон '+start+':'+len);
+  if(url.indexOf('src=lab')<0)url+=(url.indexOf('?')<0?'?src=lab':'&src=lab');   /* 48: метка клиента — сервер пишет «ЛАБ» в журнал потока, ДИАГ отличает лаб от моста */
+  var t0=performance.now();
+  return fetch(url,{headers:{Range:'bytes='+start+'-'+(start+len-1)},cache:'no-store',signal:opt.signal})
+    .then(function(r){
+      if(!r.ok&&r.status!=206) throw new Error('HTTP '+r.status);
+      return r.arrayBuffer().then(function(ab){
+        var ms=performance.now()-t0;
+        REQ.n++; REQ.bytes+=ab.byteLength;
+        log('fetch '+(opt.tag||'')+' bytes='+start+'-… '+fmtB(ab.byteLength)+' за '+Math.round(ms)+'мс'+(r.status==200?' (200 без Range!)':''));
+        if(r.status==200&&start>0) throw new Error('сервер игнорирует Range (200)');
+        return new Uint8Array(ab);
+      });
+    });
+}
+
+/* ═══════════ MP4: чтение боксов ═══════════ */
+function u16(b,o){ return (b[o]<<8|b[o+1])>>>0 }
+function u32(b,o){ return ((b[o]<<24)|(b[o+1]<<16)|(b[o+2]<<8)|b[o+3])>>>0 }
+function u64(b,o){ return u32(b,o)*4294967296+u32(b,o+4) }
+function typ(b,o){ return String.fromCharCode(b[o+4],b[o+5],b[o+6],b[o+7]) }
+function hex2(n){ return ('0'+n.toString(16)).slice(-2).toUpperCase() }
+/* верхнеуровневые боксы окна; base — абсолютный офсет байта 0 окна */
+function walkTop(b,base){
+  var out=[],o=0;
+  while(o+8<=b.length){
+    var s=u32(b,o),t=typ(b,o),h=8;
+    if(s===1){ if(o+16>b.length)break; s=u64(b,o+8); h=16 }
+    else if(s===0){ s=base+ b.length-o } /* до конца файла — считаем по окну */
+    var e={t:t,off:base+o,size:s,h:h};
+    if(o+s>b.length){ e.trunc=true; out.push(e); break }
+    out.push(e);
+    if(s<=0)break;
+    o+=s;
+  }
+  return out;
+}
+/* контейнеры внутри бокса (u — байты контейнера, о — офсет первого ребёнка) */
+function walkChildren(u,o0,end,cb){
+  var o=o0;
+  while(o+8<=end){
+    var s=u32(u,o),t=typ(u,o),h=8;
+    if(s===1){ if(o+16>end)break; s=u64(u,o+8); h=16 }
+    if(s===0)s=end-o;
+    if(s<8||o+s>end)break;
+    cb(t,o,o+s,h,u);
+    o+=s;
+  }
+}
+function findSig(u,sig,from,to){ /* поиск 4-байтовой сигнатуры */
+  for(var i=from||0,end=(to==null?u.length-4:to);i<=end;i++)
+    if(u[i]==sig[0]&&u[i+1]==sig[1]&&u[i+2]==sig[2]&&u[i+3]==sig[3])return i;
+  return -1;
+}
+function parseTfdt(u,p){ /* p — офсет заголовка tfdt: → baseMediaDecodeTime */
+  var v=u[p+8];
+  return v===1?u64(u,p+12):u32(u,p+12);
+}
+function parseMoov(mo){ /* Uint8Array moov с заголовком → структура */
+  var R={tracks:[],mvhd:null,mvex:false,mehd:0};
+  walkChildren(mo,8,mo.length,function(t,o,end,h){
+    if(t==='mvhd'){
+      var v=mo[o+h];
+      R.mvhd={v:v,ts:v===1?u32(mo,o+h+20):u32(mo,o+h+12),dur:v===1?u64(mo,o+h+24):u32(mo,o+h+16)};
+    }else if(t==='mvex'){
+      R.mvex=true;
+      walkChildren(mo,o+h,end,function(t2,o2,e2,h2){
+        if(t2==='mehd'){ var v2=mo[o2+h2]; R.mehd=v2===1?u64(mo,o2+h2+4):u32(mo,o2+h2+4) }
+      });
+    }else if(t==='trak'){
+      var tr={};
+      walkChildren(mo,o+h,end,function(t2,o2,e2,h2){
+        if(t2==='tkhd'){
+          var v3=mo[o2+h2];
+          if(v3===0){ tr.w=u16(mo,o2+h2+68); tr.h=u16(mo,o2+h2+70) }
+        }else if(t2==='mdia'){
+          walkChildren(mo,o2+h2,e2,function(t3,o3,e3,h3){
+            if(t3==='mdhd'){ var v4=mo[o3+h3];
+              tr.ts=v4===1?u32(mo,o3+h3+20):u32(mo,o3+h3+12);
+              tr.tdur=v4===1?u64(mo,o3+h3+24):u32(mo,o3+h3+16);
+            }else if(t3==='hdlr'){
+              tr.h=String.fromCharCode(mo[o3+h3+8],mo[o3+h3+9],mo[o3+h3+10],mo[o3+h3+11]);
+            }else if(t3==='minf'){
+              walkChildren(mo,o3+h3,e3,function(t4,o4,e4,h4){
+                if(t4==='stbl'){
+                  walkChildren(mo,o4+h4,e4,function(t5,o5,e5,h5){
+                    if(t5==='stsd'){
+                      var eo=o5+h5+8; /* первый entry */
+                      if(eo+8<=e5){
+                        var fmt=typ(mo,eo),esz=u32(mo,eo);
+                        tr.codec=fmt;
+                        /* кодек-строка: ищем avcC/hvcC/esds внутри entry; p — ПОЗИЦИЯ СИГНАТУРЫ,
+                           значит сам бокс начинается на p-4, а его поля — сразу после p */
+                        var p=findSig(mo,[0x61,0x76,0x63,0x43],eo,eo+Math.min(esz,2048)); /* avcC */
+                        if(p<0)p=findSig(mo,[0x68,0x76,0x63,0x43],eo,eo+Math.min(esz,2048)); /* hvcC */
+                        if(p<0)p=findSig(mo,[0x65,0x73,0x64,0x73],eo,eo+Math.min(esz,2048)); /* esds */
+                        if(p>0){
+                          var sig=''+String.fromCharCode(mo[p],mo[p+1],mo[p+2],mo[p+3]);
+                          if(sig==='avcC')tr.codecStr='avc1.'+hex2(mo[p+5])+hex2(mo[p+6])+hex2(mo[p+7]);
+                          else if(sig==='hvcC')tr.codecStr='hvc1.'+mo[p+6]+'.'+mo[p+9]+'.L'+mo[p+9];
+                          else if(sig==='esds')tr.codecStr=esdsCodec(mo,p);
+                        }
+                      }
+                    }else if(t5==='stsz'){ tr.stsz=u32(mo,o5+h5+8) }
+                    else if(t5==='stco'||t5==='co64'){ tr.stco=true }
+                    else if(t5==='stts'){ tr.stts=true }
+                  });
+                }
+              });
+            }
+          });
+        }
+      });
+      R.tracks.push(tr);
+    }
+  });
+  return R;
+}
+function esdsCodec(u,p){ /* u[p] — сигнатура esds; дескрипторы с p+8 */
+  try{
+    var o=p+8; /* пропускаем ver/flags (4Б) после сигнатуры */
+    function d(){ /* дескриптор: [tag][len(varint)] */
+      var tag=u[o++],len=0,b;
+      do{ b=u[o++]; len=(len<<7)|(b&0x7f) }while(b&0x80);
+      return {tag:tag,len:len};
+    }
+    var d1=d(); if(d1.tag!==0x03)return 'mp4a.40.2';
+    o+=3; /* ES_ID + flags */
+    var d2=d(); if(d2.tag!==0x04)return 'mp4a.40.2';
+    var oti=u[o]; o+=13; /* до DecoderSpecificInfo обычно */
+    if(oti===0x40){ /* AAC: попробуем AudioObjectType из 0x05 */
+      var save=o;
+      try{
+        for(var i=0;i<3;i++){
+          var dd=d();
+          if(dd.tag===0x05){ var aot=u[o]>>3; return 'mp4a.40.'+(aot||2) }
+          o+=dd.len;
+        }
+      }catch(e){}
+      o=save;
+      return 'mp4a.40.2';
+    }
+    if(oti===0x6b)return 'mp3';
+    if(oti===0x69)return 'mp3';
+    return 'mp4a.40.2';
+  }catch(e){ return 'mp4a.40.2' }
+}
+/* tfdt последнего moof в окне + сумма длительностей trun */
+function parseMoof(u,p){ /* u[p] — сигнатура moof; dur — сумма trun durations */
+  var end=p+8+u32(u,p),R={tfdt:null,dur:0};
+  var q=findSig(u,[0x74,0x66,0x64,0x74],p+8,end-8);
+  if(q>0)R.tfdt=parseTfdt(u,q);
+  var pos=findSig(u,[0x74,0x72,0x75,0x6e],p+8,end-8); /* trun */
+  while(pos>0){
+    var fl=u32(u,pos+4)&0xFFFFFF;
+    if(fl&0x100){
+      var cnt=u32(u,pos+8),base=pos+12+((fl&0x1)?4:0)+((fl&0x4)?4:0),sz=4;
+      if(fl&0x200)sz+=4; if(fl&0x400)sz+=4; if(fl&0x800)sz+=4;
+      for(var k=0;k<cnt&&base+sz*k+4<=end;k++)R.dur+=u32(u,base+sz*k);
+    }
+    pos=findSig(u,[0x74,0x72,0x75,0x6e],pos+8,end-8);
+  }
+  return R;
+}
+
+/* ═══════════ ДИАГНОСТИКА ФАЙЛА ═══════════ */
+async function diagnose(url){
+  var D={url:url,reqs:0,bytes:0,t0:performance.now(),boxes:[],moov:null,tracks:[],tail:{},verdict:''};
+  var t0=REQ.n;
+  var head=await fetchRange(url,0,4096,{tag:'diag'});
+  D.size=0;
+  /* Content-Range из первого ответа даст общий размер: спросим через пустой head-запрос */
+  var cr=await fetch(url,{headers:{Range:'bytes=0-0'},cache:'no-store'});
+  D.ctype=cr.headers.get('content-type')||'';
+  var crh=cr.headers.get('content-range')||'';
+  var m=/\/(\d+)$/.exec(crh); if(m)D.size=+m[1];
+  D.moovHdr=(cr.headers.get('x-plenka-moov')||'');
+  D.acc=cr.headers.get('accept-ranges')||'';
+  D.cc=cr.headers.get('cache-control')||'';
+  D.etag=cr.headers.get('etag')||'';
+  log('сервер: size='+fmtB(D.size)+' type='+D.ctype+' moov='+D.moovHdr+' cc='+D.cc+' ranges='+D.acc);
+  if(D.size<=0)throw new Error('не удалось узнать размер файла (Content-Range нет)');
+
+  D.boxes=walkTop(head,0);
+  var moov=D.boxes.find(function(b){return b.t==='moov'});
+  var mdat=D.boxes.find(function(b){return b.t==='mdat'});
+  D.moovBox=moov||null; D.mdatBox=mdat||null;
+  D.frontBoxes=D.boxes.slice(0,10).map(function(b){return b.t+'@'+b.off+(b.size>0?('('+fmtB(b.size)+')'):'')+(b.trunc?'…':'')});
+  if(moov&&!moov.trunc&&moov.size>0&&moov.size<=4*1048576){
+    var mb=await fetchRange(url,moov.off,moov.size,{tag:'moov'});
+    D.moov=parseMoov(mb);
+    D.tracks=D.moov.tracks.map(function(tr){
+      return {h:tr.h,codec:tr.codec||'?',codecStr:tr.codecStr||'',ts:tr.ts||0,dur:tr.tdur||0,
+        w:tr.w||0,hh:tr.h||0,stsz:tr.stsz||0,indexed:!!(tr.stco&&tr.stsz>0)};
+    });
+  }else if(moov&&moov.size>4*1048576){ D.verdict='moov слишком велик для разбора ('+fmtB(moov.size)+')'; }
+  D.initEnd=(moov&&!moov.trunc&&moov.size>0&&moov.size<=4*1048576)?(moov.off+moov.size):0;
+  D.mvhdDur=D.moov&&D.moov.mvhd?(D.moov.mvhd.dur/(D.moov.mvhd.ts||1)):null;
+
+  /* хвост: последние 2МБ (фрагмент ~500КБ — окно 256КБ могло целиком попасть в mdat) */
+  var tl=Math.min(2097152,D.size);
+  var tail=await fetchRange(url,D.size-tl,tl,{tag:'tail'});
+  var tboxes=[];
+  var first=-1;
+  for(var i=0;i+8<=tail.length;i++){
+    var s=u32(tail,i),t=typ(tail,i);
+    if(t==='moof'&&s>=8&&i+s<=tail.length){ first=i; break }
+  }
+  if(first<0){
+    /* moof нет — но moov/sidx в конце важны сами по себе */
+    for(var i2=0;i2+8<=tail.length;i2++){
+      var s2b=u32(tail,i2),t2b=typ(tail,i2);
+      if((t2b==='moov'||t2b==='sidx')&&s2b>=8&&i2+8<=tail.length){ first=i2; break }
+    }
+  }
+  if(first>=0){
+    var o=first;
+    while(o+8<=tail.length){
+      var s2=u32(tail,o),t2=typ(tail,o);
+      if(s2<8||o+s2>tail.length){ tboxes.push({t:t2+'!',off:D.size-tl+o,size:s2}); break }
+      tboxes.push({t:t2,off:D.size-tl+o,size:s2});
+      o+=s2;
+    }
+  }
+  D.tail.boxes=tboxes;
+  D.tail.moofN=tboxes.filter(function(b){return b.t==='moof'}).length;
+  D.tail.hasMoov=findSig(tail,[0x6d,0x6f,0x6f,0x76],0,tail.length-4)>0; /* 'moov' */
+  D.tail.hasSidx=findSig(tail,[0x73,0x69,0x64,0x78],0,tail.length-4)>0;
+  D.frontSidx=D.boxes.some(function(b){return b.t==='sidx'});   /* sidx бывает и в начале */
+  D.tail.firstBoxOff=first>=0?(D.size-tl+first):-1;
+  /* оценка числа фрагментов во всём файле по плотности в окне */
+  if(D.tail.moofN>0&&first>=0)D.tail.fragEst=Math.round(D.tail.moofN*D.size/Math.max(1,tl-first));
+  /* последний moof: tfdt + длительность → оценка длительности файла */
+  var lastMoof=null;
+  for(var k2=tboxes.length-1;k2>=0;k2--){
+    if(tboxes[k2].t==='moof'){
+      var mp=(tboxes[k2].off-(D.size-tl))+4;   /* позиция сигнатуры moof */
+      lastMoof=parseMoof(tail,mp);
+      break;
+    }
+  }
+  D.tail.lastMoof=lastMoof;
+  var vts=0;
+  (D.tracks||[]).forEach(function(tr){ if(tr.h==='vide'&&!vts)vts=tr.ts });
+  D.vts=vts||(D.moov&&D.moov.mvhd?D.moov.mvhd.ts:1000);
+  if(lastMoof&&lastMoof.tfdt!=null&&vts)D.estDur=(lastMoof.tfdt+lastMoof.dur)/vts;
+
+  /* вердикт */
+  var fmp4=moov&&moov.size>0&&moov.size<16384&&(D.tracks.length>0)&&D.tracks.every(function(tr){return !tr.indexed});
+  if(fmp4){
+    D.verdict='ФРАГМЕНТИРОВАННЫЙ MP4 (fMP4): moov='+fmtB(moov.size)+' без таблиц сэмплов'+
+      (D.mvhdDur===0?', длительность в заголовке = 0 (НЕИЗВЕСТНА)':', длительность '+Math.round(D.mvhdDur)+'с')+
+      ((D.frontSidx||D.tail.hasSidx)?', sidx ЕСТЬ (и это не помогло — прогрессивный путь Chromium sidx не использует)':', sidx НЕТ')+
+      (D.tail.moofN?(', moof в хвосте: '+D.tail.moofN+' шт'+(D.tail.fragEst?(' (≈'+D.tail.fragEst+' на весь файл)'):'')):', фрагментов в хвосте не видно')+
+      ' — Chromium сканирует файл фрагмент за фрагментом → вечные bytes=N- и rs=0';
+  }else if(D.tracks.length&&D.tracks.some(function(tr){return tr.indexed})){
+    D.verdict='обычный MP4 с индексом: moov='+ (moov?fmtB(moov.size):'?') +', длительность '+(D.mvhdDur!=null?Math.round(D.mvhdDur):'?')+'с — сканировать целиком Chromium не должен';
+  }else{
+    D.verdict=(moov?(moov.trunc?'moov обрезан окном чтения':'moov '+fmtB(moov.size)):'moov не найден в начале')+
+      (D.tail.hasMoov?'; moov есть В КОНЦЕ файла (не faststart!)':'')+
+      (D.tail.hasSidx?'; sidx в конце':'');
+  }
+  D.reqs=REQ.n-t0; D.bytes=REQ.bytes; D.ms=performance.now()-D.t0;
+  return D;
+}
+function renderDiag(D){
+  var h='<table>';
+  h+='<tr><th>файл</th><td>'+D.url+' — '+fmtB(D.size)+' · '+D.ctype+' · moov:'+D.moovHdr+' · cc:'+D.cc+' · etag:'+D.etag+'</td></tr>';
+  h+='<tr><th>первые боксы</th><td>'+(D.frontBoxes||[]).join(' ')+'</td></tr>';
+  h+='<tr><th>moov</th><td>'+(D.moovBox?('off='+D.moovBox.off+' size='+fmtB(D.moovBox.size)+(D.moovBox.trunc?' (обрезан)':'')):'—')+
+    (D.moov&&D.moov.mvhd?(' · mvhd: ts='+D.moov.mvhd.ts+' dur='+D.moov.mvhd.dur):'')+
+    (D.moov&&D.moov.mvex?' · mvex ЕСТЬ (fMP4)':'')+'</td></tr>';
+  (D.tracks||[]).forEach(function(tr,i){
+    h+='<tr><th>трек '+(i+1)+'</th><td>'+tr.h+' · '+tr.codec+(tr.codecStr?(' → '+tr.codecStr):'')+
+      ' · ts='+(tr.ts||'-')+' dur='+(tr.dur||'-')+(tr.w?(' · '+tr.w+'×'+tr.hh):'')+
+      ' · сэмплов='+(tr.stsz||0)+(tr.indexed?' (индекс)':' (БЕЗ индекса)')+'</td></tr>';
+  });
+  h+='<tr><th>хвост (2МБ)</th><td>moof='+D.tail.moofN+(D.tail.fragEst?(' (≈'+D.tail.fragEst+' на весь файл)'):'')+' · mdat='+(D.tail.boxes||[]).filter(function(b){return b.t==='mdat'}).length+
+    ' · moov в конце:'+(D.tail.hasMoov?'ДА':'нет')+' · sidx:'+(D.tail.hasSidx?'ДА':'нет')+
+    (D.tail.lastMoof&&D.tail.lastMoof.tfdt!=null?(' · последний tfdt='+D.tail.lastMoof.tfdt+' dur='+(D.tail.lastMoof.dur||'-')):'')+'</td></tr>';
+  h+='<tr><th>длительность</th><td>'+(D.mvhdDur!=null?('заголовок: '+(D.mvhdDur?'≈'+Math.round(D.mvhdDur)+'с':'0 — НЕИЗВЕСТНА')):'?')+
+    (D.estDur?(' · по хвосту: ≈'+Math.round(D.estDur)+'с'):'')+'</td></tr>';
+  h+='<tr><th>диагноз</th><td><b>'+(D.verdict||'—')+'</b></td></tr>';
+  h+='<tr><th>запросов</th><td>'+D.reqs+' fetch на '+fmtB(D.bytes)+' за '+fmtMs(D.ms)+'</td></tr>';
+  h+='</table>';
+  $('#diagOut').innerHTML=h;
+}
+
+/* ═══════════ ПРОПУСКНАЯ СПОСОБНОСТЬ ═══════════ */
+async function throughput(url){
+  var r={};
+  var t0=performance.now();
+  var a=await fetchRange(url,65536,8*1048576,{tag:'thr-serial'});
+  r.serial=a.length/((performance.now()-t0)/1000);
+  var offs=[16,20,24,28,32,36].map(function(x){return x*1048576});
+  var t1=performance.now();
+  await Promise.all(offs.map(function(o){return fetchRange(url,o,4*1048576,{tag:'thr-par'})}));
+  r.par=offs.length*4*1048576/((performance.now()-t1)/1000);
+  log('пропускная: подряд '+(r.serial/1048576).toFixed(1)+'МБ/с, параллельно 6×4МБ '+(r.par/1048576).toFixed(1)+'МБ/с');
+  return r;
+}
+
+/* ═══════════ MSE-МОСТ ═══════════ fetch → SourceBuffer, метаданные из init-сегмента */
+function concatU8(a,b){
+  var r=new Uint8Array(a.length+b.length);
+  r.set(a,0); r.set(b,a.length);
+  return r;
+}
+function sbAppend(sb,u8){
+  return new Promise(function(res,rej){
+    function h(){clean();res()}
+    function e(){clean();rej(new Error('append error'))}
+    function clean(){sb.removeEventListener('updateend',h);sb.removeEventListener('error',e)}
+    sb.addEventListener('updateend',h,{once:true});
+    sb.addEventListener('error',e,{once:true});
+    try{ sb.appendBuffer(u8) }catch(err){ clean(); rej(err) }
+  });
+}
+function bufAhead(v){
+  try{
+    var b=v.buffered;
+    for(var i=0;i<b.length;i++) if(v.currentTime>=b.start(i)-0.1&&v.currentTime<=b.end(i)+0.1) return b.end(i)-v.currentTime;
+  }catch(e){}
+  return null;
+}
+async function timeToByte(url,tSec,D){
+  /* окно сканируем ПО СИГНАТУРАМ moof (walkTop от произвольного байта даёт мусор),
+     валидируем размер и парсим tfdt; 512КБ окно гарантирует хотя бы один moof */
+  var ts=D.vts||1000,target=Math.round(tSec*ts);
+  var dur=Math.max(1,D.estDur||durHint()||D.mvhdDur||1);
+  var ie=Math.max(0,Math.min(D.initEnd||0,D.size-1));
+  var guess=ie+Math.floor(tSec/dur*Math.max(1,D.size-ie));
+  for(var it=0;it<6;it++){
+    var ws=Math.max(ie,guess-262144);
+    var win=await fetchRange(url,ws,524288,{tag:'mse-seek'});
+    var cands=[];
+    var pos=findSig(win,[0x6d,0x6f,0x6f,0x66],8,win.length-8);
+    while(pos>0){
+      var bs=pos-4,sz=u32(win,bs);
+      if(sz>=8&&bs+sz<=win.length){
+        var q=findSig(win,[0x74,0x66,0x64,0x74],pos+4,bs+sz-8);
+        if(q>0)cands.push({off:ws+bs,t:parseTfdt(win,q)});
+      }
+      pos=findSig(win,[0x6d,0x6f,0x6f,0x66],pos+4,win.length-8);
+    }
+    var pick=null;
+    for(var i=0;i<cands.length;i++){ if(cands[i].t<=target)pick=cands[i]; else break }
+    if(pick)return pick.off;
+    if(cands.length){
+      var first=cands[0];
+      var bytesPerUnit=(D.size-ie)/Math.max(1,dur*ts);
+      var back=Math.max(524288,Math.round((first.t-target)*bytesPerUnit));
+      guess=Math.max(ie,first.off-back);
+    }else guess=Math.max(ie,ws-524288);
+  }
+  return guess;
+}
+async function mseBuild(v,M,ctx){
+  if(!window.MediaSource)throw new Error('MediaSource нет в этом браузере');
+  var url=ctx.url,D=ctx.diag;
+  var head=await fetchRange(url,0,4096,{tag:'mse-init'});
+  var boxes=walkTop(head,0);
+  var moov=null; for(var i=0;i<boxes.length;i++)if(boxes[i].t==='moov'){moov=boxes[i];break}
+  if(!moov)throw new Error('moov не найден в начале файла (fMP4 с moov в конце MSE не берёт)');
+  if(moov.trunc||moov.size>4*1048576)throw new Error('moov странный: size='+moov.size);
+  var initEnd=moov.off+moov.size;
+  var init=initEnd<=head.length?head.slice(0,initEnd):await fetchRange(url,0,initEnd,{tag:'mse-init2'});
+  M.initEnd=initEnd;
+  var mo=parseMoov(init.slice(moov.off,moov.off+moov.size));   /* moov БЕЗ ftyp — children-walk с 8 */
+  var hasVid=mo.tracks.some(function(tr){return tr.h==='vide'});
+  var vs=[],as=[];
+  mo.tracks.forEach(function(tr){
+    if(tr.h==='vide'&&tr.codecStr)vs.push(tr.codecStr);
+    if(tr.h==='soun'&&tr.codecStr)as.push(tr.codecStr);
+  });
+  var codecs=vs.concat(as).join(',');
+  var mime=(hasVid?'video':'audio')+'/mp4'+(codecs?('; codecs="'+codecs+'"'):'');
+  log('MSE: init='+fmtB(initEnd)+' mime='+mime+(mo.mvex?' (fMP4)':'')+' треков='+mo.tracks.length);
+  if(!codecs)throw new Error('кодек-строки не извлеклись из moov (avcC/esds не найдены) — MSE не собрать');
+  if(!MediaSource.isTypeSupported(mime))throw new Error('MSE не поддерживает '+mime);
+  M.mime=mime;
+  var ms=new MediaSource();
+  v.src=URL.createObjectURL(ms);
+  M.objUrl=v.src;
+  var r0=await once(ms,'sourceopen',8000);
+  if(r0==='timeout')throw new Error('sourceopen не пришёл');
+  var sb=ms.addSourceBuffer(mime);
+  ctx.mse={ms:ms,sb:sb,st:{gen:0,next:initEnd,flushed:false},M:M,url:url,D:D,
+            mime:mime,init:init,objUrls:[v.src]};
+  await sbAppend(sb,init);
+  var known=D.estDur||durHint()||0;
+  if(known>0){ try{ ms.duration=known; M.durSet=known }catch(e){ log('MSE: duration не ставится: '+e) } }
+  pumpMse(v,ctx);
+}
+function pumpMse(v,ctx){
+  /* 43.1: аппендим ТОЛЬКО целые боксы (moof+mdat): чанк может резать бокс, и парсер
+     остаётся «в середине mdat». Хвост неполного бокса копим и prepend-им к следующему
+     чанку; seek хвост сбрасывает (st.flushed). Каждая пересборка MSE = новое ПОКОЛЕНИЕ
+     (st.gen): старая качалка молча умирает на ближайшей проверке, не трогая новый SB */
+  var st=ctx.mse.st,M=ctx.mse.M,D=ctx.mse.D,url=ctx.mse.url;
+  var myGen=st.gen;
+  var pending=new Uint8Array(0);
+  (async function(){
+    try{
+      while(st.gen===myGen&&!STATE.stop){
+        var sb=ctx.mse.sb,ms=ctx.mse.ms;
+        if(!sb||!ms)return;
+        if(st.flushed){ st.flushed=false; pending=new Uint8Array(0) }
+        var ahead=bufAhead(v);
+        if(ahead!=null&&ahead>24){ await sleep(300); continue }
+        if(st.next>=D.size){ try{ ms.endOfStream() }catch(e){} break }
+        if(!(st.next>=(ctx.diag.initEnd||0)&&isFinite(st.next)))break;
+        var need=Math.min(Math.max(chunkBytes()-pending.length,262144),D.size-st.next);
+        var u8=await fetchRange(url,st.next,need,{tag:'mse'});
+        if(st.gen!==myGen)return;
+        st.next+=u8.length;
+        var buf=pending.length?concatU8(pending,u8):u8;
+        var o=0;
+        while(o+8<=buf.length){
+          var s=u32(buf,o);
+          if(s===1){ if(o+16>buf.length)break; s=u64(buf,o+8) }
+          else if(s===0)s=buf.length-o;
+          if(s<8||o+s>buf.length)break;
+          o+=s;
+        }
+        if(o>0){
+          try{ await sbAppend(sb,buf.slice(0,o)) }
+          catch(e){ if(st.gen!==myGen)return; M.pumpErr=''+e; return }
+          M.bytes=(M.bytes||0)+o;
+          pending=buf.slice(o);
+        }else pending=buf;
+      }
+    }catch(e){ if(st.gen===myGen&&!STATE.stop)M.pumpErr=''+e }
+  })();
+}
+async function mseSeek(v,t,ctx){
+  var m=ctx.mse; if(!m)return;
+  /* в буфере — нативный сик (мгновенно, без сети) */
+  try{
+    var b=v.buffered;
+    for(var i=0;i<b.length;i++){
+      if(t>=b.start(i)-1&&t<=b.end(i)+1){ v.currentTime=t; log('MSE seek '+t.toFixed(0)+'с — в буфере, нативно'); return }
+    }
+  }catch(e){}
+  /* далеко: аппенд через разрыв травит парсер Chromium (CHUNK_DEMUXER_ERROR_APPEND_FAILED,
+     debug2/3: мид-фрагмент на СВЕЖИЙ SourceBuffer — всегда ОК) → пересобираем MSE на месте */
+  var D=ctx.diag;
+  var byte=await timeToByte(ctx.url,t,D);
+  byte=Math.max(D.initEnd||0,Math.min(byte,D.size-1));
+  log('MSE seek '+t.toFixed(0)+'с → пересборка MSE, байт '+byte);
+  m.st.gen++;                        /* старая качалка умирает молча */
+  var old=m.ms;
+  var ms2=new MediaSource();
+  v.src=URL.createObjectURL(ms2);
+  try{ m.M.objUrls.push(v.src) }catch(e){}
+  var r0=await once(ms2,'sourceopen',8000);
+  if(r0==='timeout')throw new Error('sourceopen(2) не пришёл');
+  var sb2=ms2.addSourceBuffer(m.mime);
+  m.ms=ms2; m.sb=sb2;
+  await sbAppend(sb2,m.init);
+  var known=D.estDur||durHint()||0;
+  if(known>0){ try{ ms2.duration=known }catch(e){} }
+  m.st.next=byte; m.st.flushed=true;
+  pumpMse(v,ctx);
+  v.currentTime=t;
+}
+
+/* ═══════════ ПРОВОДНИК СТРАТЕГИЙ ═══════════ */
+function freshVideo(prev){
+  if(prev){ try{prev.pause();prev.removeAttribute('src');prev.load()}catch(e){} prev.remove() }
+  var v=document.createElement('video');
+  v.muted=true; v.playsInline=true; v.setAttribute('playsinline','');
+  v.className='stratVideo';
+  var pv=$('#pv'); pv.hidden=true;
+  pv.insertAdjacentElement('afterend',v);
+  return v;
+}
+function firstFrame(v,ms){
+  return new Promise(function(res){
+    var done=false;
+    function fin(){ if(!done){done=true;clearInterval(iv);res(true)} }
+    try{ if('requestVideoFrameCallback' in v)v.requestVideoFrameCallback(fin) }catch(e){}
+    var iv=setInterval(function(){ try{ if(v.readyState>=2&&v.videoWidth>0)fin() }catch(e){} },100);
+    setTimeout(function(){ if(!done){done=true;clearInterval(iv);res(false)} },ms);
+  });
+}
+var lastVideo=null;
+async function runStrategy(S,ctx){
+  if(STATE.stop)return null;
+  STATE.running=true; setButtons();
+  var M={name:S.name,_t0:performance.now(),ev:{},samples:[],bytes:0};
+  var v=freshVideo(lastVideo); lastVideo=v;
+  var tmo=tmoMs();
+  ['loadstart','durationchange','canplay','playing','waiting','stalled','error','abort'].forEach(function(ev){
+    v.addEventListener(ev,function(){
+      if(M.ev[ev]==null){ M.ev[ev]=Math.round(performance.now()-M._t0); if(ev!=='loadstart')log(S.name+': '+ev+' +'+fmtMs(M.ev[ev])) }
+    });
+  });
+  var sampIv=setInterval(function(){
+    try{
+      var bf=0,b=v.buffered;
+      for(var i=0;i<b.length;i++)bf+=b.end(i)-b.start(i);
+      if(M.samples.length<10)M.samples.push('rs'+v.readyState+'/n'+v.networkState+'/b'+Math.round(bf)+'МБ');
+    }catch(e){}
+  },1500);
+  var myCtx={url:ctx.url,diag:ctx.diag};
+  try{
+    await S.build(v,M,myCtx);
+    /* 1) метаданные */
+    var r1=await once(v,'loadedmetadata',tmo);
+    M.meta=r1==='timeout'?null:Math.round(performance.now()-M._t0);
+    if(r1==='timeout'&&!v.error){ M.note='метаданные не пришли за '+Math.round(tmo/1000)+'с' }
+    if(v.error){ M.err='code '+v.error.code+(v.error.message?(': '+v.error.message.slice(0,60)):'') }
+    /* 2) кадр + играем */
+    if(M.meta!=null||S.tolerant){
+      try{ var p=v.play(); if(p&&p.catch)p.catch(function(e){ M.playErr=''+e }) }catch(e){ M.playErr=''+e }
+      var fr=await firstFrame(v,tmo);
+      M.frame=fr?Math.round(performance.now()-M._t0):null;
+      if(fr){
+        var t2=performance.now();
+        while(performance.now()-t2<tmo&&!STATE.stop){
+          if(v.currentTime>=2||v.ended)break;
+          await sleep(150);
+        }
+        M.play2s=(v.currentTime>=2)?Math.round(performance.now()-M._t0):null;
+      }
+    }
+    /* 3) сики */
+    var dur=(isFinite(v.duration)&&v.duration>0)?v.duration:(ctx.diag&&ctx.diag.estDur)||durHint();
+    if(dur>4&&(M.frame!=null||M.meta!=null)){
+      [0.5,0.95].forEach(function(f,idx){ M['seek'+(idx?'95':'50')+'Plan']=dur*f });
+      for(var si=0;si<2;si++){
+        if(STATE.stop)break;
+        var f=si===0?0.5:0.95,tt=dur*f;
+        try{
+          v.pause();
+          if(myCtx.mse)await mseSeek(v,tt,myCtx); else v.currentTime=tt;
+          var rs=await once(v,'seeked',20000);
+          if(rs!=='timeout'){
+            var fr2=await firstFrame(v,12000);
+            M[si===0?'seek50':'seek95']=(fr2?Math.round(performance.now()-M._t0):null);
+            if(!fr2)M['seek'+(si?'95':'50')+'Note']='seeked без кадра';
+          }else M['seek'+(si?'95':'50')+'Note']='таймаут seeked';
+        }catch(e){ M['seek'+(si?'95':'50')+'Note']=''+e }
+        try{ v.play() }catch(e){}
+      }
+    }else if(!(dur>4))M.seekNote='длительность неизвестна — сики пропущены';
+    try{ var b2=v.buffered,bf2=0; for(var z=0;z<b2.length;z++)bf2+=b2.end(z)-b2.start(z); M.buf=Math.round(bf2) }catch(e){}
+    M.dur=(isFinite(v.duration)&&v.duration)?Math.round(v.duration):null;
+  }catch(e){
+    M.err=M.err||(''+(e&&e.message||e));
+  }finally{
+    clearInterval(sampIv);
+    if(STATE.stop||!S.keep){ /* видео уберёт следующий прогон или стоп */ }
+    STATE.results.push(M);
+    renderResults();
+    STATE.running=false;
+    log(M.name+': готово ('+(M.err?('ОШИБКА '+M.err):(M.meta!=null?('meta '+fmtMs(M.meta)):'meta —'))+')');
+  }
+  return M;
+}
+function fmtM(M,k){ var v=M[k]; if(v==null)return '<span class="mut">—</span>'; return fmtMs(v) }
+function renderResults(){
+  var h='<table><tr><th>стратегия</th><th>метаданные</th><th>кадр</th><th>играет 2с</th><th>seek 50%</th><th>seek 95%</th><th>буф.</th><th>итог</th></tr>';
+  STATE.results.forEach(function(M){
+    var good=M.frame!=null;
+    h+='<tr><td class="stname">'+M.name+'</td><td>'+fmtM(M,'meta')+'</td><td>'+fmtM(M,'frame')+'</td><td>'+fmtM(M,'play2s')+'</td><td>'+fmtM(M,'seek50')+'</td><td>'+fmtM(M,'seek95')+'</td><td>'+(M.buf!=null?M.buf+'с':'—')+'</td>';
+    if(M.err)h+='<td class="bad">✗ '+esc(M.err.slice(0,60))+'</td>';
+    else if(M.frame!=null)h+='<td class="ok">✓</td>';
+    else if(M.meta!=null)h+='<td class="bad">meta есть, кадра нет</td>';
+    else h+='<td class="bad">✗ не открылось</td>';
+    h+='</tr>';
+  });
+  if(!STATE.results.length)h='<div class="mut">ещё не запускалось</div>';
+  $('#resOut').innerHTML=h+'</table>'+(STATE.results.some(function(M){return M.samples.length})?
+    '<div class="res-note">'+STATE.results.map(function(M){return M.name+': '+(M.samples.join(' ')||'—')}).join('<br>')+'</div>':'');
+  var cur=lastVideo; if(cur&&!STATE.running){ $('#pvNote').textContent='последняя стратегия: '+cur.currentSrc.slice(-40) }
+}
+function esc(s){ return (''+s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]}) }
+
+/* ═══════════ СТРАТЕГИИ ═══════════ */
+function plainBuild(preload,frag){ return async function(v,M,ctx){
+  v.preload=preload||'auto';
+  v.src=ctx.url+(frag?'#t=0.001':'');
+  v.load();
+} }
+function abUrl(base){ return base+'?ka=1&cc=cache&cap=16&ovh=0&src=lab' }
+var STRATEGIES=[
+  {name:'S1 · как в приложении (plain)',            build:plainBuild('auto')},
+  {name:'S2 · preload=metadata',                    build:plainBuild('metadata')},
+  {name:'S3 · src + #t=0.001',                      build:plainBuild('auto',true)},
+  {name:'S4 · сервер A/B (ka+cache+cap16+ovh0)',    build:plainBuild('auto'),ab:true},
+  {name:'S5 · MSE-мост',                            build:mseBuild},
+  {name:'S6 · MSE + сервер A/B',                    build:mseBuild,ab:true}
+];
+async function runAll(){
+  if(STATE.running)return;
+  STATE.stop=false; STATE.results=[];
+  var url=mediaUrl();
+  log('── прогон на '+url+' ──');
+  try{
+    var D=await diagnose(url);
+    STATE.diag=D; renderDiag(D);
+  }catch(e){ log('диагностика упала: '+e); toast('диагностика: '+e) }
+  try{ STATE.thr=await throughput(url) }catch(e){ log('throughput: '+e) }
+  var ctx={url:url,diag:STATE.diag};
+  var idxs=STRATEGIES.map(function(_,i){return i});
+  if(Q.get('set')==='fast')idxs=[0,3,4,5];        /* S1, S4, S5, S6 — достаточный минимум */
+  for(var ii=0;ii<idxs.length;ii++){
+    var i=idxs[ii];
+    if(STATE.stop)break;
+    var S=STRATEGIES[i];
+    if(S.ab)ctx=ctx; /* A/B вариант сам подменит url ниже */
+    var myCtx={url:S.ab?abUrl(url):url,diag:STATE.diag};
+    var saved={url:ctx.url}; ctx.url=myCtx.url;
+    await runStrategy(S,ctx);
+    ctx.url=saved.url;
+  }
+  buildReport();
+}
+function toast(s){ try{ var d=document.createElement('div');d.textContent=s;d.style.cssText='position:fixed;left:10px;right:10px;bottom:10px;background:#3a2416;color:#ffd9a0;padding:10px;border-radius:8px;z-index:99;font-size:13px';document.body.appendChild(d);setTimeout(function(){d.remove()},4000) }catch(e){} }
+
+/* ═══════════ ОТЧЁТ ═══════════ */
+async function buildReport(){
+  var D=STATE.diag;
+  var L=[];
+  L.push('──── ПЛЁНКА видео-лаборатория ────');
+  L.push('когда: '+new Date().toLocaleString('ru-RU'));
+  L.push('UA: '+navigator.userAgent);
+  L.push('файл: '+mediaUrl()+(D?(' — '+fmtB(D.size)+' · moov:'+D.moovHdr+' · cc:'+D.cc):''));
+  if(D){
+    L.push('ДИАГНОЗ: '+D.verdict);
+    L.push('длительность: '+(D.mvhdDur!=null?('заголовок='+(D.mvhdDur?Math.round(D.mvhdDur)+'с':'0 (НЕИЗВЕСТНА)')):'?')+(D.estDur?(' · по хвосту≈'+Math.round(D.estDur)+'с'):'')+(durHint()?(' · подсказка='+Math.round(durHint())+'с'):''));
+    if(D.tracks&&D.tracks.length)L.push('треки: '+D.tracks.map(function(t){return t.h+':'+t.codec+(t.codecStr?('/'+t.codecStr):'')+' ts='+t.ts+' indexed='+t.indexed}).join(' | '));
+    L.push('боксы: '+(D.frontBoxes||[]).join(' '));
+  }
+  if(STATE.thr)L.push('пропускная: подряд '+(STATE.thr.serial/1048576).toFixed(1)+'МБ/с · параллельно 6×4МБ '+(STATE.thr.par/1048576).toFixed(1)+'МБ/с');
+  L.push('стратегий: '+STATE.results.length+(STATE.stop?' (прервано)':''));
+  STATE.results.forEach(function(M){
+    L.push('• '+M.name+': meta='+fmtMs(M.meta)+' frame='+fmtMs(M.frame)+' play2='+fmtMs(M.play2s)+
+      ' seek50='+fmtMs(M.seek50)+(M.seek50Note?('('+M.seek50Note+')'):'')+' seek95='+fmtMs(M.seek95)+(M.seek95Note?('('+M.seek95Note+')'):'')+
+      ' буф='+((M.buf!=null)?M.buf+'с':'-')+' dur='+((M.dur!=null)?M.dur+'с':'-')+
+      (M.bytes?(' скачано '+fmtB(M.bytes)):'')+
+      (M.mime?(' mime='+M.mime):'')+
+      (M.pumpErr?(' качалка: '+M.pumpErr):'')+
+      (M.durSet?(' dur='+M.durSet):'')+
+      (M.ev&&M.ev.error!=null?(' error@'+fmtMs(M.ev.error)):'')+
+      (M.err?(' ОШИБКА: '+M.err):'')+
+      (M.samples.length?(' ['+M.samples.join(' ')+']'):''));
+  });
+  /* журнал сервера (если есть эндпоинт) */
+  try{
+    var r=await fetch(urlBase()+'/__srvlog',{cache:'no-store'});
+    if(r.ok){
+      var j=await r.json();
+      if(j&&j.streams&&j.streams.length){
+        L.push('потоки сервера ('+j.streams.length+' последних):');
+        j.streams.slice(-14).forEach(function(s){L.push('  '+s)});
+        if(j.stats)L.push('статистика сервера: '+JSON.stringify(j.stats));
+      }
+    }
+  }catch(e){}
+  var txt=L.join('\n');
+  $('#report').value=txt;
+  window.__labDone=txt;
+  log('отчёт собран: '+L.length+' строк');
+  return txt;
+}
+
+
+/* ═══════════ ОТЛАДКА MSE (?debug=1): инструментированная сессия ═══════════ */
+async function runDebugMse(){
+  var url=mediaUrl();
+  log('── debug MSE: '+url+' ──');
+  try{
+    var diag=await diagnose(url);
+    var v=freshVideo(lastVideo); lastVideo=v;
+    var head=await fetchRange(url,0,4096);
+    var boxes=walkTop(head,0),moov=null;
+    for(var i=0;i<boxes.length;i++)if(boxes[i].t==='moov')moov=boxes[i];
+    var initEnd=moov.off+moov.size;
+    var init=head.slice(0,initEnd);
+    var mo=parseMoov(init.slice(moov.off,moov.off+moov.size));
+    var codecs=mo.tracks.map(function(tr){return tr.codecStr}).filter(Boolean).join(',');
+    log('debug: initEnd='+initEnd+' codecs='+codecs);
+    var ms=new MediaSource();
+    v.src=URL.createObjectURL(ms);
+    var r0=await once(ms,'sourceopen',5000);
+    log('debug: sourceopen='+r0+' rs='+ms.readyState);
+    var sb=ms.addSourceBuffer('video/mp4; codecs="'+codecs+'"');
+    var app=async function(u8){
+      await new Promise(function(res,rej){
+        function h(){clean();res()}
+        function e(){clean();rej(new Error('append error (updating='+sb.updating+' ms.rs='+ms.readyState+')'))}
+        function clean(){sb.removeEventListener('updateend',h);sb.removeEventListener('error',e)}
+        sb.addEventListener('updateend',h,{once:true});
+        sb.addEventListener('error',e,{once:true});
+        try{ sb.appendBuffer(u8) }catch(err){ clean();rej(new Error('appendBuffer throw: '+err)) }
+      });
+    };
+    await app(init);
+    log('debug: init appended');
+    if(diag.estDur||durHint()){ try{ ms.duration=diag.estDur||durHint() }catch(e){ log('debug: dur '+e) } }
+    var st={next:initEnd,stop:false};
+    (async function pump(){
+      while(!st.stop&&!STATE.stop){
+        var ahead=bufAhead(v);
+        if(ahead!=null&&ahead>24){ await sleep(300); continue }
+        if(st.next>=diag.size){ try{ ms.endOfStream() }catch(e){} break }
+        var u8=await fetchRange(url,st.next,Math.min(chunkBytes(),diag.size-st.next));
+        if(st.stop)return;
+        try{ await app(u8) }catch(e){ log('debug: PUMP ERR '+e.message+' @байт '+st.next+' (tfdt-зона)'); st.stop=true; if(v.error)log('debug: VIDEO ERROR code='+v.error.code+' '+(v.error.message||'')); return }
+        st.next+=u8.length;
+      }
+    })();
+    var rm=await once(v,'loadedmetadata',5000);
+    log('debug: loadedmetadata='+rm+' dur='+(isFinite(v.duration)?Math.round(v.duration):'-'));
+    try{ await v.play() }catch(e){ log('debug: play err '+e) }
+    await sleep(2500);
+    log('debug: играет t='+v.currentTime.toFixed(2)+'с rs='+v.readyState);
+    var b=v.buffered,s='';
+    for(var k=0;k<b.length;k++)s+='['+b.start(k).toFixed(1)+'-'+b.end(k).toFixed(1)+']';
+    log('debug: buffered='+s);
+    /* СИК на 50% */
+    v.pause();
+    var t50=(diag.estDur||durHint()||3662)*0.5;
+    var moofOff=await timeToByte(url,t50,diag);
+    log('debug: seek к '+Math.round(t50)+'с, moof@'+moofOff+' (валид='+(String.fromCharCode(head[0],head[1])||'')+')');
+    st.next=moofOff;
+    v.currentTime=t50;
+    var rs=await once(v,'seeked',9000);
+    log('debug: seeked='+rs+' rs='+v.readyState+' t='+v.currentTime.toFixed(2));
+    if(v.error)log('debug: VIDEO ERROR code='+v.error.code+' '+(v.error.message||''));
+    var b2=v.buffered,s2='';
+    for(var k2=0;k2<b2.length;k2++)s2+='['+b2.start(k2).toFixed(1)+'-'+b2.end(k2).toFixed(1)+']';
+    log('debug: buffered после сика='+s2+' ms.rs='+ms.readyState);
+    try{ v.play() }catch(e){}
+    st.stop=false;
+    window.__debugDone=true;
+  }catch(e){ log('debug: FATAL '+e.message); window.__debugDone=true }
+}
+
+
+/* ═══ ОТЛАДКА 2 (?debug=2): мид-файл фрагмент на СВЕЖИЙ SourceBuffer ═══ */
+async function runDebugMse2(){
+  var url=mediaUrl();
+  try{
+    var diag=await diagnose(url);
+    var head=await fetchRange(url,0,4096);
+    var boxes=walkTop(head,0),moov=null;
+    for(var i=0;i<boxes.length;i++)if(boxes[i].t==='moov')moov=boxes[i];
+    var init=head.slice(0,moov.off+moov.size);
+    var mo=parseMoov(init.slice(moov.off,moov.off+moov.size));
+    var codecs=mo.tracks.map(function(tr){return tr.codecStr}).filter(Boolean).join(',');
+    var v=freshVideo(lastVideo); lastVideo=v; v.muted=true;
+    var ms=new MediaSource(); v.src=URL.createObjectURL(ms);
+    await once(ms,'sourceopen',5000);
+    var sb=ms.addSourceBuffer('video/mp4; codecs="'+codecs+'"');
+    var app=async function(u8){ await new Promise(function(res,rej){
+      function h(){clean();res()} function e(){clean();rej(new Error('append error'))}
+      function clean(){sb.removeEventListener('updateend',h);sb.removeEventListener('error',e)}
+      sb.addEventListener('updateend',h,{once:true}); sb.addEventListener('error',e,{once:true});
+      try{ sb.appendBuffer(u8) }catch(err){ clean();rej(new Error('throw '+err)) }
+    }) };
+    await app(init);
+    ms.duration=diag.estDur||3662;
+    /* мид-файл: moof на 50% + 2МБ целыми боксами */
+    var off=await timeToByte(url,1834,diag);
+    var raw=await fetchRange(url,off,2097152);
+    var o=0;
+    while(o+8<=raw.length){
+      var s=u32(raw,o);
+      if(s<8||o+s>raw.length)break;
+      o+=s;
+    }
+    log('debug2: мид-фрагмент @'+off+' — целых боксов '+fmtB(o));
+    try{
+      await app(raw.slice(0,o));
+      log('debug2: append мид-фрагмента ОК (без предыстории!)');
+    }catch(e){ log('debug2: append мид-фрагмента ПАЛ: '+e.message) }
+    await sleep(800);
+    var b=v.buffered,s='';
+    for(var k=0;k<b.length;k++)s+='['+b.start(k).toFixed(1)+'-'+b.end(k).toFixed(1)+']';
+    log('debug2: buffered='+s+' rs='+v.readyState+' err='+(v.error?('code '+v.error.code):'-'));
+    try{ v.currentTime=1834; await once(v,'seeked',6000);
+      log('debug2: СИК на 1834: seeked ОК, t='+v.currentTime.toFixed(1));
+      try{await v.play() }catch(e){}
+      await sleep(1500);
+      log('debug2: после play: t='+v.currentTime.toFixed(2)+'с rs='+v.readyState+(v.error?(' err code '+v.error.code):''));
+    }catch(e){ log('debug2: сик не удался: '+e.message) }
+    window.__debugDone=true;
+  }catch(e){ log('debug2 FATAL '+e.message); window.__debugDone=true }
+}
+
+
+/* ═══ ОТЛАДКА 3 (?debug=3): последовательный стрим → remove() → мид-аппенд ═══ */
+async function runDebugMse3(){
+  var url=mediaUrl();
+  try{
+    var diag=await diagnose(url);
+    var head=await fetchRange(url,0,4096);
+    var boxes=walkTop(head,0),moov=null;
+    for(var i=0;i<boxes.length;i++)if(boxes[i].t==='moov')moov=boxes[i];
+    var initEnd=moov.off+moov.size;
+    var init=head.slice(0,initEnd);
+    var mo=parseMoov(init.slice(moov.off,moov.off+moov.size));
+    var codecs=mo.tracks.map(function(tr){return tr.codecStr}).filter(Boolean).join(',');
+    var v=freshVideo(lastVideo); lastVideo=v; v.muted=true;
+    var ms=new MediaSource(); v.src=URL.createObjectURL(ms);
+    await once(ms,'sourceopen',5000);
+    var sb=ms.addSourceBuffer('video/mp4; codecs="'+codecs+'"');
+    var app=async function(u8){ await new Promise(function(res,rej){
+      function h(){clean();res()} function e(){clean();rej(new Error('append error'))}
+      function clean(){sb.removeEventListener('updateend',h);sb.removeEventListener('error',e)}
+      sb.addEventListener('updateend',h,{once:true}); sb.addEventListener('error',e,{once:true});
+      try{ sb.appendBuffer(u8) }catch(err){ clean();rej(new Error('throw '+err)) }
+    }) };
+    await app(init);
+    ms.duration=diag.estDur||3662;
+    /* последовательный стрим 6МБ (≈28с) целыми боксами */
+    var raw=await fetchRange(url,initEnd,6291456);
+    var o=0;
+    while(o+8<=raw.length){ var s=u32(raw,o); if(s<8||o+s>raw.length)break; o+=s }
+    await app(raw.slice(0,o));
+    log('debug3: стрим '+fmtB(o)+' аппенден');
+    try{ await v.play() }catch(e){}
+    await sleep(1500);
+    var b=v.buffered,s1='';
+    for(var k=0;k<b.length;k++)s1+='['+b.start(k).toFixed(1)+'-'+b.end(k).toFixed(1)+']';
+    log('debug3: играет t='+v.currentTime.toFixed(2)+' buffered='+s1);
+    /* СИК: remove() всего + мид-аппенд */
+    v.pause();
+    var off=await timeToByte(url,1834,diag);
+    var raw2=await fetchRange(url,off,2097152);
+    var o2=0;
+    while(o2+8<=raw2.length){ var s2=u32(raw2,o2); if(s2<8||o2+s2>raw2.length)break; o2+=s2 }
+    try{
+      await new Promise(function(res){ sb.addEventListener('updateend',function h(){sb.removeEventListener('updateend',h);res()},{once:true}); sb.remove(0,1e9) });
+      log('debug3: remove(0..∞) ок');
+    }catch(e){ log('debug3: remove пал: '+e.message) }
+    /* СВЕЖИЙ SourceBuffer: removeSourceBuffer → addSourceBuffer → init → мид */
+    var sb2=null;
+    try{
+      ms.removeSourceBuffer(sb);
+      sb2=ms.addSourceBuffer('video/mp4; codecs="'+codecs+'"');
+      log('debug3: SourceBuffer пересоздан');
+    }catch(e){ log('debug3: пересоздание ПАЛО: '+e.message) }
+    if(sb2){
+      sb=sb2;
+      app=async function(u8){ await new Promise(function(res,rej){
+        function h(){clean();res()} function e(){clean();rej(new Error('append error'))}
+        function clean(){sb.removeEventListener('updateend',h);sb.removeEventListener('error',e)}
+        sb.addEventListener('updateend',h,{once:true}); sb.addEventListener('error',e,{once:true});
+        try{ sb.appendBuffer(u8) }catch(err){ clean();rej(new Error('throw '+err)) }
+      }) };
+      try{
+        await app(init);
+        await app(raw2.slice(0,o2));
+        log('debug3: init+мид на СВЕЖИЙ SourceBuffer ОК');
+      }catch(e){ log('debug3: аппенд на свежий ПАЛ: '+e.message) }
+    }
+    v.currentTime=1834;
+    var rs=await once(v,'seeked',7000);
+    log('debug3: seeked='+rs+' t='+v.currentTime.toFixed(1)+' err='+(v.error?('code '+v.error.code+' '+(v.error.message||'').slice(0,90)):'-'));
+    if(rs==='seeked'){
+      try{ await v.play() }catch(e){}
+      await sleep(1500);
+      log('debug3: после play t='+v.currentTime.toFixed(2)+' rs='+v.readyState+(v.error?(' err '+v.error.code):''));
+      var b2=v.buffered,s2='';
+      for(var k2=0;k2<b2.length;k2++)s2+='['+b2.start(k2).toFixed(1)+'-'+b2.end(k2).toFixed(1)+']';
+      log('debug3: buffered='+s2);
+    }
+    window.__debugDone=true;
+  }catch(e){ log('debug3 FATAL '+e.message); window.__debugDone=true }
+}
+
+/* ═══════════ UI ═══════════ */
+function setButtons(){
+  $('#bRun').disabled=STATE.running;
+  $('#bDiag').disabled=STATE.running;
+  $('#bStop').disabled=!STATE.running;
+}
+$('#fId').value=Q.get('id')||'77';
+if(Q.get('dur'))$('#fDur').value=Q.get('dur');
+if(Q.get('tmo'))$('#fTmo').value=Q.get('tmo');
+$('#bDiag').addEventListener('click',async function(){
+  try{
+    STATE.stop=false;
+    var D=await diagnose(mediaUrl());
+    STATE.diag=D; renderDiag(D);
+  }catch(e){ log('diag: '+e); toast(''+e) }
+});
+$('#bRun').addEventListener('click',runAll);
+$('#bStop').addEventListener('click',function(){
+  STATE.stop=true;
+  if(lastVideo){ try{lastVideo.pause();lastVideo.removeAttribute('src');lastVideo.load()}catch(e){} lastVideo.remove(); lastVideo=null; $('#pv').hidden=false }
+  log('— СТОП по кнопке —');
+  buildReport();
+});
+$('#bCopy').addEventListener('click',function(){
+  var t=$('#report');
+  t.select();
+  try{
+    navigator.clipboard.writeText(t.value).then(function(){toast('отчёт скопирован')},function(){document.execCommand('copy');toast('скопировано (fallback)')});
+  }catch(e){ document.execCommand('copy'); toast('скопировано (fallback)') }
+});
+log('лаборатория v2.4 готова. файл='+($('#fId').value)+' таймаут='+($('#fTmo').value)+'с'+(Q.get('auto')?' · авто-режим':''));
+if(Q.get('debug')==='3'){
+  setTimeout(function(){ runDebugMse3() },300);
+}else if(Q.get('debug')==='2'){
+  setTimeout(function(){ runDebugMse2() },300);
+}else if(Q.get('debug')){
+  setTimeout(function(){ runDebugMse() },300);
+}else if(Q.get('auto')){
+  setTimeout(async function(){
+    try{ await runAll() }catch(e){ log('авто-прогон упал: '+e); window.__labDone='ERROR: '+e }
+  },300);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+# ===== Секреты — НИКОГДА в git =====
+.env
+.env.*
+upload/p
+upload/q
+scripts/chat_cookies.json
+scripts/cookie_str.txt
+scripts/chat_share_raw.json
+scripts/chat_share.json
+scripts/chat_files_list.json
+scripts/chat_share_text.txt
+scripts/awcontents.b64
+plenka-native/plenka.keystore
+plenka-native/local.properties
+
+# ===== Видео и медиа (по требованию: видео не надо) =====
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.avi
+*.m4v
+scripts/nativemedia/
+
+# ===== APK и бинарные артефакты сборки =====
+*.apk
+*.aab
+scripts/cmdtools.zip
+scripts/apk36_dex/
+plenka-native/app/build/
+plenka-native/.gradle/
+
+# ===== Служебное: логи, скриншоты, дампы, извлечённые чанки =====
+skills/
+scripts/*.log
+scripts/*.png
+scripts/*.jpg
+scripts/_*.js
+scripts/ws*.json
+scripts/wr*.json
+scripts/so_*.html
+scripts/so_*.txt
+scripts/tiny_thumb.jpg
+tool-results/
+worklog.md
+__pycache__/
+*.pyc
+.DS_Store
