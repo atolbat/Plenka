@@ -23,7 +23,8 @@ plenka-native/local.properties
 scripts/nativemedia/
 
 # ===== APK и бинарные артефакты сборки =====
-*.apk
+# Готовые сборки download/PLENKA-native-*.apk — КОММИТИМ (переживают сбросы workspace).
+# Промежуточные артефакты (base/aligned) живут в scripts/apkbuild/ — игнорируются ниже.
 *.aab
 scripts/cmdtools.zip
 scripts/apk36_dex/
