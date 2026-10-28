@@ -1806,7 +1806,8 @@ function idbOp(store,mode,fn){
     return new Promise(function(res,rej){
       var t=d.transaction(store,mode), q;
       try{ q=fn(t.objectStore(store)); }catch(e){ rej(e); return; }
-      t.oncomplete=function(){ res(q&&q.result) };
+      t.oncomplete=function(){ if(!idbOK)idbOK=true; res(q&&q.result) };   /* 65: одна транзиентная ошибка
+        больше не хоронит сохранение до перезагрузки — успешная транзакция реанимирует */
       t.onerror=function(){ rej(t.error) };
       t.onabort=function(){ rej(t.error) };
     });
@@ -2512,7 +2513,7 @@ function showInfo(it){
   rows.forEach(function(r){ if(!r)return;
     h+='<div style="display:flex;gap:14px;padding:7px 0;border-top:1px solid var(--line);font-size:11px">'
       +'<span style="color:var(--mut);width:108px;flex:none">'+esc(r[0])+'</span>'
-      +'<span style="color:var(--tx);min-width:0">'+r[1]+'</span></div>';
+      +'<span style="color:var(--tx);min-width:0">'+esc(String(r[1]))+'</span></div>';
   });
   if(it.meta){ var M=it.meta;
     var mk=function(pp){ var s3=''; pp.forEach(function(p){
@@ -2638,7 +2639,7 @@ function cardPreviewStart(it,thumbEl){
   });
   ensure.then(function(f){
     if(!f||!cardPrevV)return;
-    u=URL.createObjectURL(f);
+    u=cachedUrl(it.id)||URL.createObjectURL(f);       /* 65: при живом кэше не плодим второй URL (rememberUrl его бы потерял) */
     rememberUrl(it.id,u); cardPrevUrl=null;           /* URL в общем LRU — отзыв общим механизмом */
     go2();
   }).catch(function(){});
@@ -3742,7 +3743,7 @@ async function doProbe(it){
     it.status='ok';
     v.removeAttribute('src'); try{v.load()}catch(e){}
     URL.revokeObjectURL(u);
-  }catch(e){ if(!probeHarvest(it))it.status=(it.duration>0)?'ok':'bad'; }   /* 34: атомы дали длительность — «ok» без постера; живая карточка вместо «bad» */
+  }catch(e){ try{ if(u)URL.revokeObjectURL(u) }catch(eU){} if(!probeHarvest(it))it.status=(it.duration>0)?'ok':'bad'; }   /* 34: атомы дали длительность — «ok» без постера; 65: URL пробы отзываем и в ошибке */
   finishProbe(it);
 }
 function finishProbe(it){
@@ -3806,8 +3807,10 @@ function metaAsync(it,f){                          /* теги/обложка и
   }catch(e){ return Promise.resolve(); }
 }
 function dropBadItem(it,silent){
+  var curO=(currentIdx>=0&&items[currentIdx])?items[currentIdx]:null;   /* 65: индекс привязан к ССЫЛКЕ,
+    а не к позиции: удалили играющего (или соседа слева) — раньше currentIdx молча указывал на чужого */
   items=items.filter(function(x){return x!==it});
-  if(currentIdx>=0&&items[currentIdx]===undefined)currentIdx=-1;
+  currentIdx=curO?(curO===it?-1:items.indexOf(curO)):-1;
   idbDel('items',it.id); idbDel('blobs',it.id); idbDel('kv','subs:'+it.id); idbDel('handles','fh::'+it.id);
   forgetUrl(it);
   badSet[it.id]=true;
@@ -3838,6 +3841,7 @@ function persistItem(it){
     idbPut('prev',it.id,{id:it.id,thumb:it.thumb,fframe:it.fframe,fthumb:it.fthumb,mcover:it.mcover}); }
 }
 async function removeItem(it){
+  var curO=(currentIdx>=0&&items[currentIdx])?items[currentIdx]:null;   /* 65: пересчёт по ссылке */
   items=items.filter(function(x){return x!==it});
   if(hiddenSet[it.id]){ delete hiddenSet[it.id]; saveHidden(); }
   rmSet[it.id]={n:it.name,a:Date.now(),k:it.kind}; saveRm();   /* 57: реестр — крестик больше
@@ -3852,7 +3856,7 @@ async function removeItem(it){
      rmSet, и «вернуть скрытые» работает без повторного выбора файла */
   forgetUrl(it);
   syncPost({t:'lib',k:'del',id:it.id});               /* вторая вкладка уберёт строку сразу */
-  if(currentIdx>=0&&items[currentIdx]===undefined)currentIdx=-1;
+  currentIdx=curO?(curO===it?-1:items.indexOf(curO)):-1;   /* 65: гвард по undefined ловил только сдвиг последнего индекса */
   renderLib(); renderStrip(); renderPlTabs(); toast(t('removedLib'));
 }
 var fileErr=null;                                 /* причина последнего отказа ensureFile */
@@ -4206,11 +4210,20 @@ function frameProof(el){                    /* кадр ИМЕННО текущ�
 }
 function swapRoles(){
   var old=vActive, sb=vStandby;
+  try{ clearTimeout(seekStuckT); clearTimeout(seekSpinT) }catch(e){}   /* 65: seek-таймеры уходящего элемента
+      не должны сработать уже по новому video и дёрнуть лишний reloadActiveTo */
   lastBufs='\u0000';                            /* кэш полос буфера больше не про тот элемент */
   vActive=sb; vStandby=old; video=sb;           /* весь video.* теперь бьёт в новый активный */
   sb.style.zIndex=3; old.style.zIndex=1;   /* 30: новый НАД подложкой, старый ПОД ней — его кадр
                                              больше не виден ни в переходе, ни в леттербоксе */
   try{ old.pause(); old.muted=true; }catch(e){}
+  try{                                          /* 65: уходящий элемент был зеркалом оконного PiP — окно уходит вместе
+      с ним, иначе висит стоп-кадр старого трека при живом звуке нового (video→audio,
+      swap при открытом PiP вне mirror-пути) */
+    if(document.pictureInPictureElement&&old&&document.pictureInPictureElement===old&&document.exitPictureInPicture){
+      document.exitPictureInPicture().catch(function(){}); PIP.native=false; PIP.mode='off';
+    }
+  }catch(e){}
   old._seekDone=false;                          /* при возврате к нему — перескок на сохранённую позицию */
   (function(oldEl){                             /* 47: уходящий HIGH-RES элемент (теперь standby) держит живой
       4К-декодер + буфер всё время, пока играет следующий трек — на бюджетном SoC это
@@ -4621,7 +4634,9 @@ async function scanFolder(f){
         }
       }
     }
+    var curO=(currentIdx>=0&&items[currentIdx])?items[currentIdx]:null;   /* 65: рескан папки — та же порча индекса */
     items=items.filter(function(x){ return !(x.kind==='dir'&&x.dir===f.id&&!found[x.id]) });
+    currentIdx=curO?items.indexOf(curO):-1;
   }catch(e){}
   /* право подтвердилось — возобновляем пробы, отложенные из-за permWait */
   for(var q2=0;q2<items.length;q2++){ var qi=items[q2];
@@ -5178,10 +5193,17 @@ function msebSupported(){ try{ return 'MediaSource' in window&&!!window.MediaSou
 var MSEB_NO={};                              /* id → был откат: мост файлу выключен до перезагрузки */
 var MSEB_WHY={};                             /* 51: id → ПОЧЕМУ мост не строился — видно в ДИАГ без дампа */
 function msebCandidate(it){ return NATV&&it&&it.kind==='native'&&!it.audio&&(it.size||0)>2*1048576&&!MSEB_NO[it.id]&&msebSupported()&&!mirrorActive() }
-function msebFetch(url,start,len){
-  return fetch(url,{headers:{Range:'bytes='+start+'-'+(start+len-1)},cache:'no-store'})
-    .then(function(r){ if(!r.ok&&r.status!=206)throw new Error('HTTP '+r.status); return r.arrayBuffer() })
-    .then(function(ab){ return new Uint8Array(ab) });
+function msebFetch(url,start,len){   /* 65: таймаут 10с + один ретрай: зависший фетч больше не блокирует качалку навсегда
+    и не копит висячие коннекты до паралича всей сети к 127.0.0.1 */
+  function mFetch1(){
+    var ac=null; try{ ac=new AbortController() }catch(eA){}
+    var tid=setTimeout(function(){ try{ if(ac)ac.abort() }catch(eB){} },10000);
+    return fetch(url,{headers:{Range:'bytes='+start+'-'+(start+len-1)},cache:'no-store',signal:ac?ac.signal:undefined})
+      .then(function(r){ clearTimeout(tid); if(!r.ok&&r.status!=206)throw new Error('HTTP '+r.status); return r.arrayBuffer() },
+            function(eR){ clearTimeout(tid); throw eR })
+      .then(function(ab){ return new Uint8Array(ab) });
+  }
+  return mFetch1().catch(function(){ return mFetch1() });
 }
 function u32b(b,o){ return ((b[o]<<24)|(b[o+1]<<16)|(b[o+2]<<8)|b[o+3])>>>0 }
 function u64b(b,o){ return u32b(b,o)*4294967296+u32b(b,o+4) }
@@ -5300,6 +5322,8 @@ function msebPatchMoof(u,moofOff,trex){
       var tid=u32b(pair,tfhd+12), fp=tfhd+16;
       if(fl&0x000001)fp+=8;
       if(fl&0x000002)fp+=4;
+      if(fl&0x000008)fp+=4;                            /* 65: default_sample_duration присутствует — курсор обязан его пройти
+          (раньше defSize читался со смещением duration; msebKeyAt обходил правильно — пары разошлись) */
       var defSize=(fl&0x000010)?u32b(pair,fp):null;
       var tx=(trex&&trex[tid])||{};
       for(var ti=0;ti<truns.length&&ok;ti++){
@@ -5416,8 +5440,10 @@ function msebParseMoov(mo){                           /* moov без загол�
     }else if(t==='mvex'){
       R.mvex=true;
       msebWalk(mo,o+h,end,function(t2,o2,e2,h2){   /* trex: дефолты сэмплов по треку (для пробега размеров) */
-        if(t2==='trex'){ var tid=u32b(mo,o2+h2+4);
-          (R.trex=R.trex||{})[tid]={dur:u32b(mo,o2+h2+8),size:u32b(mo,o2+h2+12),flags:u32b(mo,o2+h2+16)} }
+        if(t2==='trex'){ var tid=u32b(mo,o2+h2+4);   /* 65: trex — FullBox: track_ID@+4, desc@+8, dur@+12, size@+16, flags@+20;
+            раньше все три дефолта читались со сдвигом -4 (dur=desc, size=dur, flags=size) —
+            ломало и адресацию PatchMoof, и keyframe-бэкофф */
+          (R.trex=R.trex||{})[tid]={dur:u32b(mo,o2+h2+12),size:u32b(mo,o2+h2+16),flags:u32b(mo,o2+h2+20)} }
       });
     }
     else if(t==='trak'){
@@ -5761,6 +5787,15 @@ async function msebRecover(el,why){
 async function msebReopen(el,tSec){
   var b=el._mseb; if(!b)return false;
   var it=b.it, wasPlaying=!!(b.playing||b.techPaused);   /* 50: тех-пауза от ошибки — тоже вернуть играющим */
+  if(it){ it._mreopen=(it._mreopen||0)+1;
+    if(it._mreopen>3){   /* 65: кап полных пересозданий на файл: каждый reopen обнулял deadResets
+        свежего моста — «ядовитый» фрагмент гонял цикл сброс→пересоздание бесконечно */
+      try{ MSEB_NO[it.id]=1 }catch(eM){}
+      NJ('open','MSE: пересозданий больше 3 — файлу мост отключён до перезагрузки');
+      try{ toast(t('errOpenFail'),'err') }catch(eT){}
+      return false;
+    }
+  }
   try{ msebDestroy(el) }catch(e0){}
   try{ el.pause() }catch(e1){}
   try{ el.removeAttribute('src') }catch(e2){}
@@ -6060,8 +6095,10 @@ function msebAnchors(u,off0,b){                        /* 45: якоря бай�
       var bs=pos-4,sz=u32b(u,bs);
       if(sz>=8&&bs+sz<=u.length){
         var q=msebSig(u,[0x74,0x66,0x64,0x74],pos+4,bs+sz-8);
-        if(q>0){ var v=u[q+8];
-          var t=(v===1?u64b(u,q+12):u32b(u,q+12))/ts;
+        if(q>0){ var v=u[q+4];   /* 65: tfdt — FullBox: версия в байте ПОСЛЕ типа (q+4), BMDT сразу за version+flags (q+8).
+            Раньше версия читалась из payload (q+8), время — из соседнего бокса (q+12): карта якорей была
+            мусорной на tfdt v0 (дефолт ffmpeg) — сик систематически промахивался, мост уезжал в recover/фолбэк */
+          var t=(v===1?u64b(u,q+8):u32b(u,q+8))/ts;
           var off=off0+bs;
           if(!b.map.length||off>b.map[b.map.length-1].off+1048576)   /* реже 1МБ — карта не растёт безмерно */
             b.map.push({off:off,t:t});
@@ -6126,10 +6163,12 @@ async function msebPrevMoof(url,byte,b){
     while(true){
       pos=msebSig(u,[0x6d,0x6f,0x6f,0x66],pos,Math.max(0,u.length-8));
       if(pos<0)break;
-      var off=from+pos-4,sz=u32b(u,pos);
+      var off=-1,sz=0;
+      if(pos>=4){ off=from+pos-4; sz=u32b(u,pos-4) }   /* 65: размер бокса лежит ПЕРЕД типом; раньше читали ASCII 'moof' (~1.8млрд)
+          — проверка «после moof идёт mdat» не срабатывала никогда */
       if(off<byte-8&&sz>=8){
         var okv=true;
-        if(pos+sz+8<=u.length)okv=(typ4(u,pos+sz)==='mdat');   /* после moof обязан идти mdat — ложные сигнатуры внутри данных отсеиваются */
+        if(pos-4+sz+8<=u.length)okv=(typ4(u,pos-4+sz)==='mdat');   /* 65: соседний бокс — от начала moof-бокса */
         if(okv)best=off;
       }
       pos+=4;
@@ -6139,7 +6178,8 @@ async function msebPrevMoof(url,byte,b){
 }
 async function msebSeekByte(url,tSec,b){          /* 48: msebTimeToByte + отступ к ключевому кадру (≤8 шагов, ≤12МБ) */
   var byte;
-  try{ byte=await msebTimeToByte(url,tSec,b) }catch(e){ byte=b.initEnd||0 }
+  try{ byte=await msebTimeToByte(url,tSec,b) }catch(e){ return -1 }   /* 65: неудача поиска — сигнал наверх;
+      раньше молча «сажались» в начало файла: сик выглядел успешным, а данные к цели не везлись */
   byte=Math.max(b.initEnd||0,Math.min(byte,(b.size||1)-1));
   var cur=byte,i;
   for(i=0;i<8;i++){
@@ -6189,9 +6229,13 @@ function msebSleep(ms){                                /* 56: фоновый р�
     var t0=Date.now(),mc=null;
     try{ mc=new MessageChannel() }catch(e){}
     if(!mc){ setTimeout(res,ms); return }
+    var done=function(){ try{mc.port1.close();mc.port2.close()}catch(e2){} res() };
     var step=function(){
-      if(Date.now()-t0>=ms-8){ try{mc.port1.close();mc.port2.close()}catch(e2){} res(); return }
-      mc.port1.onmessage=function(){ mc.port1.onmessage=null; step() };
+      if(Date.now()-t0>=ms-8){ done(); return }
+      mc.port1.onmessage=function(){ mc.port1.onmessage=null; setTimeout(function(){   /* 65: микро-пауза 8мс между макротасками —
+          MessageChannel-сон без неё крутил сотни-тысячи тиков в секунду в фоне */
+        if(Date.now()-t0>=ms-8){ done(); return }
+        step() },8) };
       try{ mc.port2.postMessage(0) }catch(e3){ setTimeout(res,Math.max(0,ms-(Date.now()-t0))) }
     };
     step();
@@ -6229,8 +6273,8 @@ function msebPump(el){                                 /* качалка: пар
             темп по прогрессу СВОИХ фетчей (myT): вырывались за цель+hi → ждём. Бэкфилл:
             фетчи идут К цели — не блокируем */
           var tgt=(st.seekT!=null)?st.seekT:(el.currentTime||0);
-          if(myT>tgt+hi){ await msebSleep(320); continue }
-        }else if(ahead>hi){ await msebSleep(320); continue }
+          if(myT>tgt+hi){ await msebSleep(el.paused?1000:320); continue }   /* 65: пауза — такт раз в секунду, фон не будим зря */
+        }else if(ahead>hi){ await msebSleep(el.paused?1000:320); continue }
         if(ahead!=null&&ahead>1.5&&(st.bufEnd||0)>2.5){
           await msebSleep(((b&&(b.w||0)>=2560)||((b&&(b.h||0))>=1440))?60:140) }  /* 63: hi-res — сон 60: буфер 4К не отстаёт; 46: 3→1.5с —
             начальное наполнение тоже с темпом: на высоком разрешении бесконтрольный
@@ -6302,7 +6346,8 @@ function msebPump(el){                                 /* качалка: пар
           return;
         }
       }
-    }catch(e){ if(st.gen===myGen)NJ('open','MSE: качалка остановилась — '+e) }
+    }catch(e){ if(st.gen===myGen){ NJ('open','MSE: качалка упала ('+e+') — реанимация');
+      try{ msebRecover(el,'качалка остановилась: '+e) }catch(eR){} } }   /* 65: один обрыв сети больше не оставляет мост навсегда без качалки */
   })();
 }
 function msebBufEnd(el){                              /* 47: фактический конец el.buffered (для стража) */
@@ -6337,9 +6382,9 @@ async function msebTimeToByte(url,tSec,b){             /* время → бай�
       var bs=pos-4,sz=u32b(win,bs);
       if(sz>=8&&bs+sz<=win.length){
         var q=msebSig(win,[0x74,0x66,0x64,0x74],pos+4,bs+sz-8);
-        if(q>0){ var v=win[q+8];
-          cands.push({off:ws+bs,t:v===1?u64b(win,q+12):u32b(win,q+12)});
-          var at=(((v===1?u64b(win,q+12):u32b(win,q+12))/ts)||0);   /* 45: якорь в карту (и пробные окна — тоже факты) */
+        if(q>0){ var v=win[q+4];   /* 65: tfdt FullBox — версия @q+4, BMDT @q+8 (см. msebAnchors) */
+          cands.push({off:ws+bs,t:v===1?u64b(win,q+8):u32b(win,q+8)});
+          var at=(((v===1?u64b(win,q+8):u32b(win,q+8))/ts)||0);   /* 45: якорь в карту (и пробные окна — тоже факты) */
           if(!map.length||ws+bs>map[map.length-1].off+1048576)map.push({off:ws+bs,t:at});
         }
       }
@@ -6394,6 +6439,7 @@ async function msebSeek(el,t){                          /* в буфере — �
   var byte=await msebSeekByte(b.furl||b.url,t,b);   /* 48: байт выровнен на ключевой кадр — аппенд не начинается с P-кадра */
   if(el._mseb!==b||b.dead||b.seekSeq!==mySq)return;   /* 46: сик перебит/мост снесли, пока искали байт — тихо уходим
       (в 3.0 здесь выживал зомби и вешал мёртвый мост поверх фолбэка) */
+  if(byte<0){ NJ('open','MSE: байт сика не найден (окна мимо) — реанимация'); try{ msebRecover(el,'сик: байт не найден') }catch(eR1){} return }   /* 65 */
   byte=Math.max(b.initEnd,Math.min(byte,b.size-1));
   b.st.gen++;                                        /* старая качалка умирает молча (и вперёд, и назад — один путь) */
   b.st.next=byte; b.st.flushed=true;
@@ -6488,7 +6534,8 @@ async function openItem(idx,opts){
   /* источник: готовый запасной элемент → склейка мгновенно; иначе готовим его же */
   var instant=standbyReadyFor(it);
   perfOpen(idx,instant);
-  if(!vActive.paused)quietPause(vActive);   /* 23.1/26.2: старый звук глушим сразу и ТИХО —
+  var wasPrevPlaying=!vActive.paused;       /* 65: помним, был ли прошлый трек играющим */
+  if(wasPrevPlaying)quietPause(vActive);   /* 23.1/26.2: старый звук глушим сразу и ТИХО —
     пауза открытия не поднимает панель (вспышка UI на старте свайпнутого видео) */
   setVblank(it);                           /* 30.1: подложка сразу на цель. freeze в переходе отменён:
                                             его стоп-кадр и был «кадром прошлого видео». Теперь под новым
@@ -6536,6 +6583,8 @@ async function openItem(idx,opts){
         ' src='+(''+(it.url||'')).slice(-44));      /* 2.4/2.5: причина — в журнал/ДИАГ, не вслепую */
       try{ profApply(prevIdx>=0?items[prevIdx]:null) }catch(e){}   /* 37.4: неудача — профиль играющего трека возвращается (применяли же нового) */
       try{ applyAudio(); applyFilters(); applyFit() }catch(e){}   /* 33.1: неудача — старый трек снова слышим: mute был служебным */
+      try{ if(wasPrevPlaying&&vActive._pid&&(!it||it.id!==vActive._pid))vActive.play() }catch(eP){}   /* 65: не оставляем
+        уходящий трек замороженным кадром без звука — возвращаем то, что играло до неудачного открытия */
       hidePoster(true); hideFreeze();
       if(lsWhy==='gone'){                          /* 2.5: файл недоступен на устройстве — честно и сразу;
         карточку уберёт фоновый перескан (merge видит «исчезло») */
@@ -6579,6 +6628,15 @@ async function openItem(idx,opts){
     MINI.item=it; miniTitle.textContent=fileNameOf(it);
     if(it.audio){ miniThumb.innerHTML=miniArtHTML(it); }   /* 61: 404 арта → нота */
     else{ miniThumb.innerHTML=''; try{ vActive.style.transform=''; }catch(e){} miniThumb.appendChild(vActive); }
+    miniIcon();
+  }
+  else if(MINI.mode==='local'&&MINI.item===it&&!it.audio&&!miniThumb.contains(vActive)&&!(MIRROR.on&&MIRROR.mode==='stream')){
+    /* 65: soft-close («свайп-назад») посреди загрузки: enterMini пересадил в панель УСТАРЕВШИЙ
+       активный элемент (кадр A), а заголовок уже показывал B. После склейки приводим панель
+       к факту: в мини — новый активный элемент (звук и кадр одного трека) */
+    miniThumb.innerHTML='';
+    try{ vActive.style.transform=''; }catch(eM){}
+    miniThumb.appendChild(vActive);
     miniIcon();
   }
   $('#tDur').textContent=fmtT(video.duration);   /* метаданные уже были — слушатель loadedmetadata не придёт */
@@ -6811,7 +6869,7 @@ VOn('playing',function(){ NJ('open','событие: playing (t='+Math.round(vid
 VOn('ended',function(){ bgLive=false });
 setInterval(function(){                               /* 55: поток-вочдог: пауз нет, а время 6с стоит */
   try{
-    if(player.hidden||!video.src||video.paused||video.ended||video.error||video.seeking)return;
+    if((player.hidden&&MINI.mode!=='local')||!video.src||video.paused||video.ended||video.error||video.seeking)return;   /* 65: в мини-панели поток тоже лечим — зависший кадр фризил навсегда */
     if(video._mseb)return;                            /* MSE-мост следит за буфером сам (v51) */
     var it=(currentIdx>=0)?items[currentIdx]:null;
     if(!it||it.kind!=='native')return;               /* только нативный поток: блобы/ссылки лечит их хозяин */
@@ -6985,6 +7043,8 @@ var lastPosSave=0;
 function savePos(force){
   if(currentIdx<0||!video.src)return;
   var it=items[currentIdx];
+  if(!it||(vActive&&vActive._pid)!==it.id)return;   /* 65: окно переключения: активный элемент ещё не владеет треком
+    currentIdx — время уходящего раньше записывалось в позицию нового («назад»/pagehide посреди загрузки) */
   it.position=(force===0)?0:video.currentTime;
   if(!idbOK||it.kind==='memory')return;
   if(force!==true&&performance.now()-lastPosSave<2500)return;
@@ -8197,13 +8257,14 @@ function applyLibSync(m){
     var it=null;
     for(var j=0;j<items.length;j++)if(items[j].id===m.id){it=items[j];break}
     if(it){
+      var curO=(currentIdx>=0&&items[currentIdx])?items[currentIdx]:null;   /* 65: пересчёт по ссылке (del со второй вкладки) */
       items=items.filter(function(x){return x!==it});
       if(hiddenSet[it.id]){ delete hiddenSet[it.id]; saveHidden(); }
       var pt=false;
       playlists.forEach(function(P){ var k=P.ids.indexOf(it.id); if(k>=0){P.ids.splice(k,1);pt=true} });
       if(pt)savePlaylists();
       forgetUrl(it);
-      if(currentIdx>=0&&items[currentIdx]===undefined)currentIdx=-1;
+      currentIdx=curO?(curO===it?-1:items.indexOf(curO)):-1;
     }
   }else if(m.k==='pls'){
     if(m.pls&&m.pls.length!==undefined){
@@ -9027,7 +9088,9 @@ function buildFmtSeg(){
   for(z=0;z<items.length;z++){ var e=(items[z].name.split('.').pop()||'').toLowerCase(); if(e)cnt[e]=(cnt[e]||0)+1; }
   var exts=Object.keys(cnt).sort(function(a,b){return cnt[b]-cnt[a]||a.localeCompare(b)}).slice(0,6);
   if(S.filter.ext!=='all'&&exts.indexOf(S.filter.ext)<0)exts.unshift(S.filter.ext);
-  var h='<button data-v="all">'+t('allQ')+'</button>'+exts.map(function(e2){return '<button data-v="'+e2+'">'+e2+'</button>'}).join('');
+  /* 65: расширение имени — данные извне (файл «clip.mp4<img src=x onerror=…>.mkv»):
+     esc обязателен и в атрибуте, и в тексте — воспроизведённый PoC Stored XSS */
+  var h='<button data-v="all">'+t('allQ')+'</button>'+exts.map(function(e2){return '<button data-v="'+esc(e2)+'">'+esc(e2)+'</button>'}).join('');
   var seg=$('#fmtSeg'); seg.innerHTML=h;
   $$('#fmtSeg button').forEach(function(b){ b.classList.toggle('on',S.filter.ext===b.getAttribute('data-v')); b.setAttribute('aria-pressed',String(S.filter.ext===b.getAttribute('data-v'))) });
 }
@@ -9351,7 +9414,7 @@ function markUserPause(v){ userPaused=!!v }
 function bgPauseGated(el){
   if(el!==video||!NATV||!document.hidden)return true;   /* не наш элемент / не фон */
   if(userPaused||bgGaveUp||el.ended||!el.src||el.error)return true;/* юзер/сдались/конец/ошибка */
-  if(localStorage.getItem('plenka.pipMode')==='pip')return true;   /* видимое PiP-окно живёт по своим правилам */
+  try{ if(localStorage.getItem('plenka.pipMode')==='pip')return true }catch(eL){}   /* 65: storage может быть заблокирован — как в соседних обращениях */
   var b=null; try{ b=el._mseb }catch(e0){}
   if(b&&(b.techPaused||b.dead||(b.st&&(b.st.rebuilding||b.st.seekT!=null))))return true;   /* мост чинит себя сам */
   return false;
@@ -9442,14 +9505,24 @@ addEventListener('drop',async function(e){
   }
   if(dirEntry){
     var read=function(dir){ return new Promise(function(res){
-      dir.createReader().readEntries(async function(es){
-        var out=[];
-        for(var j=0;j<es.length;j++){
-          if(es[j].isFile)out.push(await new Promise(function(r){ es[j].file(r) }));
-          else out=out.concat(await read(es[j]));
-        }
-        res(out);
-      });
+      var rd=dir.createReader(),ents=[];   /* 65: readEntries отдаёт максимум 100 записей за вызов —
+        папки больше сотни файлов молча обрезались; читаем порциями до пустого ответа */
+      var flush=function(){
+        (async function(){
+          var out=[];
+          for(var j=0;j<ents.length;j++){
+            if(ents[j].isFile){ try{ out.push(await new Promise(function(r,eR){ ents[j].file(r,eR) })) }catch(eF){} }
+            else{ try{ out=out.concat(await read(ents[j])) }catch(eD){} }
+          }
+          res(out);
+        })();
+      };
+      var page=function(es){
+        if(!es.length){ flush(); return }
+        ents=ents.concat(es);
+        try{ rd.readEntries(page,flush) }catch(eR){ flush() }
+      };
+      try{ rd.readEntries(page,flush) }catch(e0){ flush() }
     })};
     addFiles(await read(dirEntry),{play:false});
     return;
@@ -9486,7 +9559,9 @@ window.PLENKA={
   importFiles:function(list){ return addFiles(list,{play:list.length===1}) },
   importUrl:function(u){ return addUrl(u) },
   perf:PERF,
-  beginVideo:function(o){ if(!o||!o.id)return; inflight[o.id]={name:o.name||'video',mime:o.mime||'video/mp4',size:o.size||0,chunks:[]} },
+  beginVideo:function(o){ if(!o||!o.id)return;   /* 65: кап незавершённых импортов — падение оболочки без commit не копит память */
+    var ks=Object.keys(inflight); if(ks.length>2){ for(var qi=0;qi<ks.length-2;qi++){ try{ delete inflight[ks[qi]] }catch(eI){} } }
+    inflight[o.id]={name:o.name||'video',mime:o.mime||'video/mp4',size:o.size||0,chunks:[]} },
   chunk:function(id,b64){
     var f=inflight[id]; if(!f)return;
     try{
@@ -9505,6 +9580,7 @@ window.PLENKA={
 };
 addEventListener('message',function(e){
   try{
+    if(e.source!==window)return;   /* 65: только самовызов — чужой фрейм больше не наполняет библиотеку */
     var m=(typeof e.data==='string')?JSON.parse(e.data):e.data;
     if(m&&m.plenka){
       if(m.plenka==='begin')window.PLENKA.beginVideo(m);
@@ -10055,6 +10131,10 @@ function initSettingsUI(){
    ═════════════════════════════════════════════════════════════════ */
 var NATV=false, NATV_PIP=false, NATV_FS=false, NATV_BASE='http://127.0.0.1:8977';
 try{ NATV=!!(window.PlenkaNative&&typeof window.PlenkaNative.scan==='function'); }catch(e){}
+var NATV_TOK=(function(){ try{ var mT=(location.search||'').match(/[?&]tok=([A-Za-z0-9_-]+)/); return mT?mT[1]:'' }catch(eT){ return '' } })();   /* 65: токен локального моста —
+  оболочка кладёт его в URL страницы; loopback Android общий для всех процессов, поэтому данные
+  (/v,/a,/c,/t, списки) без валидного токена отдают 404 — чужое приложение медиатеку не выкачает */
+function natvTok(p){ return (NATV&&NATV_TOK)?(p+((p.indexOf('?')<0?'?':'&')+'tok='+NATV_TOK)):p }
 function NJ(tag,msg){ try{ window.__plenkaJ&&window.__plenkaJ(tag,msg) }catch(e){} }   /* 2.3: журнал главного скрипта */
 NJ('init','главный скрипт дошёл до натив-блока, NATV='+NATV);
 function natvCall(fn,arg){
@@ -10123,6 +10203,9 @@ window.__plenkaRebridged=function(){
 function natvPipEnter(){
   if(!NATV)return;
   if(!video.src){ toast(t('errPip'),'err'); return; }
+  try{ if(MINI.mode==='local'){ openMiniPlayer() } }catch(e0){}   /* 65: «PiP из мини»: живой элемент обязан вернуться
+    в #stage ДО pipEnter — иначе body.pip прячет miniBar вместе с ЕДИНСТВЕННЫМ видео-элементом,
+    и окно PiP показывает стоп-кадр/чёрное при играющем звуке */
   try{ natvCall('pipEnter',((vActive&&vActive.videoWidth)||16)+':'+((vActive&&vActive.videoHeight)||9)); }catch(e){}
 }
 /* псевдо-файл: .slice().arrayBuffer() как у File, чтение — Range-запросами.
@@ -10311,7 +10394,7 @@ function natvThumbUrl(m){                    /* 2.4: серверная мини
   (MediaMetadataRetriever) или встроенная обложка; r=<размер>-<mtime>: файл сменился — миниатюра новая */
   if(!m||m.id==null)return '';
   var vq=(m.vol&&(''!==m.vol))?('?vol='+encodeURIComponent(m.vol)):'';
-  return NATV_BASE+'/t/'+m.k+'/'+m.id+vq+(vq?'&':'?')+'r='+(m.s||0)+'-'+(m.t||0)+'&f=3';   /* 55: f=3 — кэш-бастер: браузер устройства помнит обложки 3.6 (t_) и 3.7 (t2_) — перезагружаем */
+  return natvTok(NATV_BASE+'/t/'+m.k+'/'+m.id+vq+(vq?'&':'?')+'r='+(m.s||0)+'-'+(m.t||0)+'&f=3');   /* 55: f=3 — кэш-бастер: браузер устройства помнит обложки 3.6 (t_) и 3.7 (t2_) — перезагружаем */
 }
 /* ═══ 2.5: префлайт доступности native-файла ═══
    HEAD по тому же URL, что будет у элемента: оболочка 2.5 прогоняет цепочку открытий
@@ -10377,7 +10460,7 @@ function natvMerge(arr,rescan){
   var seen={},added=0,updated=0;
   for(var j=0;j<arr.length;j++){
     var m=arr[j]; if(!m||!m.k||m.id==null)continue;
-    var key=m.k+':'+m.id, url=NATV_BASE+'/'+m.k+'/'+m.id+(m.vol?('?vol='+encodeURIComponent(m.vol)):'');   /* 2.1: вторичные тома (SD) — id различны на каждом томе */
+    var key=m.k+':'+m.id, url=natvTok(NATV_BASE+'/'+m.k+'/'+m.id+(m.vol?('?vol='+encodeURIComponent(m.vol)):''));   /* 2.1: вторичные тома (SD) — id различны на каждом томе */
     if(rmSet['n'+key])continue;   /* 57: убрано крестиком — в библиотеку не возвращается */
     seen[key]=1;
     var it=byNat[key];
@@ -10411,8 +10494,9 @@ function natvMerge(arr,rescan){
   var goneList=[];
   for(var k2 in byNat)if(!seen[k2])goneList.push(byNat[k2]);
   if(goneList.length){
-    var goneSet={};
+    var goneSet={},curO=(currentIdx>=0&&items[currentIdx])?items[currentIdx]:null;   /* 65: рескан сдвигал индексы молча */
     goneList.forEach(function(d){ goneSet[d.id]=1; items=items.filter(function(x){return x!==d}); idbDel('items',d.id); idbDel('prev',d.id); });
+    currentIdx=curO?items.indexOf(curO):-1;
     var plCh=false;
     playlists.forEach(function(Pl){ if(Pl&&Pl.ids){ var b=Pl.ids.length; Pl.ids=Pl.ids.filter(function(id){return !goneSet[id]}); if(Pl.ids.length!==b)plCh=true; } });
     if(plCh)savePlaylists();
@@ -10469,7 +10553,7 @@ function natvMergePicked(arr,announce){
   var added=0,updated=0;
   for(var j=0;j<arr.length;j++){
     var m=arr[j]; if(!m||m.id==null)continue;
-    var id='nc:'+m.id, url=NATV_BASE+'/c/'+m.id;
+    var id='nc:'+m.id, url=natvTok(NATV_BASE+'/c/'+m.id);
     if(rmSet[id])continue;   /* 57: убрано крестиком — файл в SAF-реестре ждёт возврата */
     var it=byId[id];
     if(it){
@@ -10481,7 +10565,7 @@ function natvMergePicked(arr,announce){
       if(d>0&&Math.abs((it.duration||0)-d)>0.5){ it.duration=d; ch=true; }
       if(m.w&&it.w!==m.w){ it.w=m.w; it.h=m.h||0; ch=true; }
       if(it.url!==url){ it.url=url; ch=true; }
-      var thu=NATV_BASE+'/t/c/'+m.id+'?r='+(m.s||0)+'-'+(m.t||0);   /* 2.4: превью ручного выбора — тем же /t/ */
+      var thu=natvTok(NATV_BASE+'/t/c/'+m.id+'?r='+(m.s||0)+'-'+(m.t||0));   /* 2.4: превью ручного выбора — тем же /t/ */
       if(!it.thumb){ it.thumb=thu; ch=true; }
       else if(it.thumb.indexOf('data:')!==0&&it.thumb!==thu){ it.thumb=thu; ch=true; }
       if(ch){ updated++; persistItem(it); }
@@ -10490,7 +10574,7 @@ function natvMergePicked(arr,announce){
       it={id:id,kind:'native',url:url,name:m.n||('file '+m.id),size:m.s||0,mtime:m.t||0,
         duration:d2,w:m.w||0,h:m.h||0,mime:m.m||'',audio:(m.k==='a'),position:0,
         addedAt:(m.t||0)*1000||Date.now(),hasSubs:false,status:'ok',picked:true,
-        thumb:NATV_BASE+'/t/c/'+m.id+'?r='+(m.s||0)+'-'+(m.t||0)};
+        thumb:natvTok(NATV_BASE+'/t/c/'+m.id+'?r='+(m.s||0)+'-'+(m.t||0))};
       if(!it.position)it.fresh=true;
       items.push(it); persistItem(it); added++;
     }
@@ -10500,7 +10584,9 @@ function natvMergePicked(arr,announce){
   for(var j2=0;j2<arr.length;j2++)seenIds['nc:'+arr[j2].id]=1;
   var gone=[];
   for(var k in byId)if(!seenIds[k])gone.push(byId[k]);
+  var curO=(currentIdx>=0&&items[currentIdx])?items[currentIdx]:null;   /* 65: индекс по ссылке */
   gone.forEach(function(g){ items=items.filter(function(x){return x!==g}); idbDel('items',g.id); idbDel('prev',g.id); });
+  currentIdx=curO?items.indexOf(curO):-1;
   if(added||gone.length||updated){ renderLib(); if(!player.hidden)renderStrip(); }
   if(added)fframeKick();
   NJ('мерж-выбор','добавлено '+added+', обновлено '+updated+', исчезло '+gone.length+', всего в библиотеке '+items.length);
@@ -10557,6 +10643,8 @@ window.__pipMode=function(on){
                                        открытого видео: #player+stage (видео) поверх pipHud — вместо
                                        чёрного экрана с панелькой (minist) */
     if(on){
+      try{ if(MINI.mode==='local'){ openMiniPlayer() } }catch(eP){}   /* 65: авто-PiP (home-жест) из мини — тот же докинг,
+        иначе окно PiP показывает стоп-кадр: элементы остаются в скрытом miniBar */
       $('#pipT').textContent=fileNameOf(items[currentIdx]||{});
       pipHudSync(); pipHudSize(); pipTapShow();
       natvRepair('вход в PiP');          /* 2.4: переход мог побить мост — чиним сразу, не ждём возврата */
@@ -10715,6 +10803,11 @@ try{
       });
     }catch(e){ NJ('init','натив-UI: исключение '+e.message); }
     NJ('init','первый синк медиатеки (items='+items.length+' после рестора)');
+    try{ if(NATV&&NATV_TOK){ var nTk=0;   /* 65: миграция после обновления — у записей из IDB нет токена моста */
+      for(var qT=0;qT<items.length;qT++){ var xT=items[qT];
+        if(xT&&xT.kind==='native'&&xT.url&&xT.url.indexOf('tok=')<0){ xT.url=natvTok(xT.url); nTk++; persistItem(xT); } }
+      if(nTk)NJ('init','токен моста: обновлено URL у '+nTk+' записей');
+    } }catch(eTk){}
     nativeSync(false);
     natvPickedSync(false);       /* native 2.1: реестр SAF — живой источник, IDB лишь кэш */
     try{window.__plenkaMark&&window.__plenkaMark('init-sync')}catch(e){}

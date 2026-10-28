@@ -91,8 +91,19 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "PLENKA"
         private const val PORT = 8977
-        private const val APP_VERSION = "PLENKA native 3.17 (v64)"
+        private const val APP_VERSION = "PLENKA native 3.18 (v65)"
         private const val RC_PERM = 7
+        private const val RC_NOTIF = 10
+
+        /* 3.18: фактические параметры локального моста. Токен закрывает главный
+           аудит-риск: loopback 127.0.0.1 на Android ОБЩИЙ для всех приложений —
+           без токена любое соседнее приложение с обычным INTERNET-разрешением
+           выкачивало всю медиатеку (/list + Range по /v/<id>) без единого
+           разрешения. Токен персистентный (filesDir/srvtoken): URL в IDB
+           переживают рестарт, страница получает его через ?tok= в loadUrl. */
+        @Volatile var SRV_PORT: Int = PORT
+        @Volatile var SRV_TOKEN: String = ""
+
         private const val RC_PICK = 8
         private const val RC_FILE = 9
 
@@ -131,6 +142,20 @@ class MainActivity : Activity() {
        FileChannel.close(), который гасит fd наглухо). LRU 6, простой 45с. */
     private class FdEntry(val afd: AssetFileDescriptor, val size: Long, val mime: String, val etag: String) {
         @Volatile var last: Long = System.currentTimeMillis()
+        /* 3.18: сколько потоков сейчас читает через serveOvh. Закрытие вытесненного/
+           простаивавшего дескриптора под живым pread давало RST и «заикания» MSE:
+           теперь закрываем только при users==0, иначе закрывает последний читатель */
+        @Volatile var users: Int = 0
+        @Volatile var zombie: Boolean = false
+    }
+
+    /* 3.18: закрыть выведенную из кэша запись, если её никто не читает;
+       читающие закроют сами при обнулении счётчика */
+    private fun fdRetire(e: FdEntry) {
+        synchronized(fdLock) {
+            e.zombie = true
+            if (e.users <= 0) { try { e.afd.close() } catch (ex: Exception) {} }
+        }
     }
     private val fdLock = Any()
     private val fdCache = HashMap<String, FdEntry>()
@@ -141,9 +166,9 @@ class MainActivity : Activity() {
         while (iter.hasNext()) {                        /* 45с без запросов — закрываем */
             val en = iter.next()
             if (now - en.value.last > 45_000) {
-                try { en.value.afd.close() } catch (e: Exception) {}
-                srvRec("fd-cache: ${en.key} закрыт по простою 45с")
                 iter.remove()
+                fdRetire(en.value)                      /* 3.18: не рвём чужой pread */
+                srvRec("fd-cache: ${en.key} выведен по простою 45с")
             }
         }
         fdCache[key]
@@ -151,26 +176,48 @@ class MainActivity : Activity() {
     private fun fdPut(key: String, e: FdEntry) {
         synchronized(fdLock) {
             val old = fdCache.put(key, e)
-            if (old != null && old !== e) { try { old.afd.close() } catch (ex: Exception) {} }
+            if (old != null && old !== e) fdRetire(old)     /* 3.18: не рвём чужой pread */
             if (fdCache.size > 6) {                     /* LRU: выкидываем самый холодный */
                 var minK: String? = null
                 var minV = Long.MAX_VALUE
                 for ((k, v) in fdCache) if (v.last < minV) { minV = v.last; minK = k }
                 val v = minK?.let { fdCache.remove(it) }
-                if (v != null) { try { v.afd.close() } catch (ex: Exception) {} }
+                if (v != null) fdRetire(v)                  /* 3.18 */
             }
         }
     }
     private fun fdDrop(key: String) {
         synchronized(fdLock) {
             val v = fdCache.remove(key) ?: return
-            try { v.afd.close() } catch (e: Exception) {}
+            fdRetire(v)                                     /* 3.18: не рвём чужой pread */
         }
     }
 
     @Volatile private var pipAuto = false   // видео играет → home-жест сворачивает в PiP
     @Volatile private var inPip = false
     @Volatile private var permDialogUp = false
+    @Volatile private var permDeniedSession = false   /* 3.18: отказ в рамках сессии — диалог не каруселим */
+    @Volatile private var firstPlayingAt = 0L         /* 3.18: когда началась первая игра (для нотиф-диалога) */
+    @Volatile private var notifAsked = false
+
+    /* 3.18: POST_NOTIFICATIONS — один раз, после 20с воспроизведения (урок 3.11:
+       диалог в момент первой игры срывал старт). До разрешения MediaStyle может
+       не показаться в шторке на Android 13+ — тогда фоновые кнопки недоступны */
+    private fun notifAskTick() {
+        if (notifAsked || Build.VERSION.SDK_INT < 33) return
+        if (firstPlayingAt == 0L) firstPlayingAt = System.currentTimeMillis()
+        if (System.currentTimeMillis() - firstPlayingAt < 20_000L) return
+        notifAsked = true
+        try {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                Log.i(TAG, "perm: POST_NOTIFICATIONS — запрос после 20с воспроизведения")
+                runOnUiThread {
+                    try { requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), RC_NOTIF) }
+                    catch (e: Exception) { Log.w(TAG, "perm notif: ${e.message}") }
+                }
+            }
+        } catch (e: Exception) {}
+    }
     @Volatile private var lastVideoW = 0   /* 3.7: аспект PiP-окна из текущего видео (mediaState) */
     @Volatile private var lastVideoH = 0
     /* 3.10: фоновый режим без PiP — зеркало состояния плеера и где активность */
@@ -226,7 +273,15 @@ class MainActivity : Activity() {
                     .put("seq", r.seq).put("uri", r.uri.toString())
                     .put("n", r.name).put("m", r.mime).put("s", r.size)
                     .put("d", r.dur).put("w", r.w).put("h", r.h).put("t", r.t).put("k", r.k))
-                File(filesDir, "picked.json").writeText(a.toString())
+                /* 3.18: атомарная запись — краш посреди writeText делал битый JSON,
+                   и весь реестр ручного выбора молча исчезал на следующем старте */
+                val f = File(filesDir, "picked.json")
+                val tmp = File(filesDir, "picked.json.tmp")
+                tmp.writeText(a.toString())
+                if (!tmp.renameTo(f)) {
+                    f.delete()
+                    if (!tmp.renameTo(f)) tmp.delete()
+                }
             } catch (e: Exception) { Log.w(TAG, "regSave: ${e.message}") }
         }
     }
@@ -374,9 +429,17 @@ class MainActivity : Activity() {
         setContentView(webView)
         mediaInit()
 
-        // сервер уже слушает (bind синхронный в start()) — страница не получит connection refused
-        webView.loadUrl("http://127.0.0.1:$PORT/")
-        Log.i(TAG, "native 3.17 started, version=$APP_VERSION sdk=${Build.VERSION.SDK_INT}")
+        // сервер уже слушает (bind синхронный в start()) — страница не получит connection refused.
+        // 3.18: токен моста в URL страницы; если bind так и не встал — честный тост вместо чёрного экрана
+        if (SRV_TOKEN.isNotEmpty() && server?.listening() == true) {
+            webView.loadUrl("http://127.0.0.1:$SRV_PORT/?tok=$SRV_TOKEN")
+        } else {
+            webView.loadDataWithBaseURL(null,
+                "<html><body style=\"background:#1d1810;color:#e8a33d;font-family:monospace;display:flex;align-items:center;justify-content:center;height:90%\">ПЛЁНКА: локальный сервер не поднялся — перезапустите приложение</body></html>",
+                "text/html; charset=utf-8", null, null)
+            Toast.makeText(this, "ПЛЁНКА: локальный сервер не поднялся", Toast.LENGTH_LONG).show()
+        }
+        Log.i(TAG, "native 3.18 started, version=$APP_VERSION port=$SRV_PORT sdk=${Build.VERSION.SDK_INT}")
 
         // 2.1: право просит сама оболочка, не полагаясь на цепочку страница→мост
         maybeAskPerm()
@@ -446,8 +509,10 @@ class MainActivity : Activity() {
     /* ═══════════════ права на медиа ═══════════════ */
 
     private fun maybeAskPerm() {
-        // partial (Android 14 «выбранные фото/видео») не переспрашиваем — скан покажет выбранное
-        if (mediaPermState() != "none" || permDialogUp || isFinishing) return
+        // partial (Android 14 «выбранные фото/видео») не переспрашиваем — скан покажет выбранное.
+        // 3.18: после отказа в этой сессии диалог не открываем снова — иначе onResume
+        // открывал его бесконечной каруселью до системного «больше не спрашивать»
+        if (mediaPermState() != "none" || permDialogUp || permDeniedSession || isFinishing) return
         permDialogUp = true
         runOnUiThread {
             try { requestPermissions(readPerms, RC_PERM) }
@@ -461,6 +526,11 @@ class MainActivity : Activity() {
             val ok = grantResults.isNotEmpty() &&
                 permissions.indices.all { grantResults.getOrNull(it) == PackageManager.PERMISSION_GRANTED }
             permDialogUp = false
+            if (requestCode == RC_NOTIF) {
+                Log.i(TAG, "perm result: NOTIFICATIONS ok=$ok")   /* 3.18: отдельный ветка — не мешает медиа-правам */
+                return
+            }
+            permDeniedSession = !ok
             Log.i(TAG, "perm result: ok=$ok perms=${permissions.joinToString()}")
             // страница могла ещё не подняться, когда упал первый результат —
             // 2.3: доставляем 6 раз, КАЖДУЮ доставку логируем вместе с квитанцией JS
@@ -760,9 +830,9 @@ class MainActivity : Activity() {
                 override fun onSkipToPrevious() { jsMedia("prev") }
                 override fun onSeekTo(pos: Long) { jsMedia("seek:$pos") }
             })
-            ms.setActive(true)
+            ms.setActive(false)                           /* 3.18: активация — по факту воспроизведения */
             mediaSession = ms
-            Log.i(TAG, "media session active")
+            Log.i(TAG, "media session created (inactive until first play)")
         } catch (e: Exception) { Log.w(TAG, "mediaInit: ${e.message}") }
     }
 
@@ -802,6 +872,12 @@ class MainActivity : Activity() {
                 val ms = mediaSession ?: return@runOnUiThread
                 val o = o0
                 val playing = o.optBoolean("playing", false)
+                if (playing) {
+                    /* 3.18: сессия активна только пока реально играет — пустая активная сессия
+                       с onCreate перехватывала медиа-кнопки наушников у чужих плееров */
+                    if (!ms.isActive) { try { ms.setActive(true) } catch (e: Exception) {} }
+                    notifAskTick()
+                }
                 val pos = o.optLong("pos", 0L) * 1000L
                 val dur = o.optLong("dur", 0L) * 1000L
                 ms.setPlaybackState(PlaybackState.Builder()
@@ -1421,11 +1497,37 @@ class MainActivity : Activity() {
         @Volatile private var htmlCache: ByteArray? = null
 
         fun start() {
+            /* 3.18: токен моста — персистентный, читается до bind */
             try {
-                val s = ServerSocket()
-                s.reuseAddress = true
-                s.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), PORT), 16)
-                srv = s
+                val tf = File(ctx.filesDir, "srvtoken")
+                var t = try { tf.readText().trim() } catch (e: Exception) { "" }
+                if (t.length < 32) {
+                    val ab = ByteArray(24)
+                    java.security.SecureRandom().nextBytes(ab)
+                    t = ab.joinToString("") { "%02x".format(it) }
+                    try { tf.writeText(t) } catch (e: Exception) {}
+                }
+                MainActivity.SRV_TOKEN = t
+            } catch (e: Exception) { Log.e(TAG, "token: ${e.message}") }
+            /* 3.18: порт занят (зомби-процесс и т.п.) — раньше сервер молча не вставал,
+               а страница всё равно грузилась: вечный «чёрный экран». Теперь пробуем соседи */
+            for (p in PORT..PORT + 9) {
+                try {
+                    val s = ServerSocket()
+                    s.reuseAddress = true
+                    s.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), p), 16)
+                    srv = s
+                    MainActivity.SRV_PORT = p
+                    break
+                } catch (e: Exception) {
+                    Log.w(TAG, "bind $p: ${e.message}")
+                }
+            }
+            try {
+                if (srv == null) {
+                    Log.e(TAG, "server start FAIL: все порты $PORT..${PORT + 9} заняты")
+                    return
+                }
                 alive.set(true)
                 Thread({
                     while (alive.get()) {
@@ -1437,9 +1539,10 @@ class MainActivity : Activity() {
                         }
                     }
                 }, "plenka-http-accept").start()
-                Log.i(TAG, "server listening 127.0.0.1:$PORT")
+                Log.i(TAG, "server listening 127.0.0.1:${MainActivity.SRV_PORT}")
             } catch (e: Exception) {
                 Log.e(TAG, "server start FAIL: ${e.message}")
+                srv = null
             }
         }
 
@@ -1448,6 +1551,8 @@ class MainActivity : Activity() {
             try { srv?.close() } catch (e: Exception) {}
             srv = null
         }
+
+        fun listening(): Boolean = srv != null && alive.get()   /* 3.18: наружный статус для loadUrl */
 
         private val assetCache = HashMap<String, ByteArray>()   /* 3.9: стенды из assets — как главный ассет */
         private fun assetBytes(name: String): ByteArray? {
@@ -1531,6 +1636,10 @@ class MainActivity : Activity() {
             var rst = false   /* 3.8: ответ оборвался короче Content-Length — сокет рвём RST, клиент перепросит */
             val path: String get() = rawPath.substringBefore('?')
             val range: String? get() = headers["range"]
+            /* 3.18: tok= из query — единственный ключ к данным моста */
+            val tok: String?
+                get() = rawPath.substringAfter('?', "").split('&')
+                    .firstOrNull { it.startsWith("tok=") }?.substring(4)
             val keepAlive: Boolean
                 get() = (headers["connection"] ?: "").lowercase(Locale.US) != "close"
         }
@@ -1538,6 +1647,21 @@ class MainActivity : Activity() {
         /** @return закрывать ли соединение после ответа */
         private fun serve(out: OutputStream, req: Request): Boolean {
             val path = req.path
+            /* 3.18: гейт доступа. Статику (/,/seek,/lab,/favicon) отдаём всем — данных в ней нет;
+               всё остальное — только с валидным токеном и с loopback-Host: чужое приложение
+               (или страница из интернета, открытая в любом браузере устройства) данные не получит */
+            if (path != "/" && path != "/index.html" && path != "/plenka.html" &&
+                path != "/favicon.ico" && path != "/seek" && path != "/seek/" &&
+                path != "/lab" && path != "/lab/") {
+                val tok = req.tok
+                val host = req.headers["host"]
+                if (tok == null || tok != MainActivity.SRV_TOKEN ||
+                    (host != null && !host.startsWith("127.0.0.1") && !host.startsWith("localhost"))) {
+                    srvRec("${req.method} $path → 404 (доступ без токена/чужой Host)")
+                    writeSimple(out, 404, "text/plain; charset=utf-8", "not found")
+                    return true
+                }
+            }
             if (path == "/seek" || path == "/seek/") {   /* 3.9: стенд перемотки — ассет v51 (вернули из 3.6):
                                                             список файлов стенд берёт сам (/__medialist), сики меряет мост страницы */
                 val html = assetBytes("plenka-seek.html")
@@ -1866,6 +1990,20 @@ class MainActivity : Activity() {
             val t0 = System.currentTimeMillis()
             val total = e.size
             if (total <= 0) return false
+            synchronized(fdLock) { e.users++ }                /* 3.18: закрытие под pread невозможно */
+            try {
+                return serveOvhInner(out, req, e)
+            } finally {
+                synchronized(fdLock) {
+                    e.users--
+                    if (e.zombie && e.users <= 0) { try { e.afd.close() } catch (ex: Exception) {} }
+                }
+            }
+        }
+
+        private fun serveOvhInner(out: OutputStream, req: Request, e: FdEntry): Boolean {
+            val t0 = System.currentTimeMillis()
+            val total = e.size
             var start = 0L
             var endIncl = total - 1
             var partial = false
@@ -2025,20 +2163,23 @@ class MainActivity : Activity() {
 
             var written = 0L
             if (req.method == "GET" && len > 0) {
-                val ch = FileInputStream(afd.fileDescriptor).channel
+                /* 3.18: FileInputStream(...).channel.close() в finally закрывал fd,
+                   ВЛАДЕЛЬЦЕМ которого является AssetFileDescriptor (второй close —
+                   в serveMedia/servePicked): классический fd-reuse race. Читаем
+                   через Os.lseek+Os.pread — fd остаётся в собственности afd */
                 try {
-                    ch.position(afd.startOffset + start)      // lseek: дальний seek не читает гигабайты
+                    val fdp = afd.fileDescriptor
+                    var pos = afd.startOffset + start         // lseek: дальний seek не читает гигабайты
                     var remaining = len
                     val buf = ByteArray(64 * 1024)
-                    val bb = ByteBuffer.wrap(buf)
                     var shortRead = false
                     while (remaining > 0) {
-                        bb.clear()
-                        bb.limit(minOf(buf.size.toLong(), remaining).toInt())
-                        val n = ch.read(bb)
+                        val want = minOf(buf.size.toLong(), remaining).toInt()
+                        val n = Os.pread(fdp, ByteBuffer.wrap(buf, 0, want), pos)
                         if (n < 0) { shortRead = true; break }   /* EOF раньше обещанного */
-                        if (n == 0) continue
+                        if (n == 0) { shortRead = true; break }
                         out.write(buf, 0, n)
+                        pos += n
                         remaining -= n
                         written += n
                     }
@@ -2051,8 +2192,8 @@ class MainActivity : Activity() {
                         req.rst = true
                         srvRec("${req.method} /$etag r=${req.range ?: "-"} → 206 ОБРЫВ: обещано ${len / 1024}КБ, прочитано ${written / 1024}КБ — RST, клиент перепросит")
                     }
-                } finally {
-                    try { ch.close() } catch (e: Exception) {}
+                } catch (e: Exception) {
+                    srvRec("${req.method} /$etag чтение: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
                 }
             }
             srvRec("${req.method} /$etag r=${req.range ?: "-"} → ${if (partial) 206 else 200} " +

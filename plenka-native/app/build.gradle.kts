@@ -11,16 +11,19 @@ android {
         applicationId = "ru.plenka.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 146
-        versionName = "3.17"
+        versionCode = 147
+        versionName = "3.18"
     }
 
     signingConfigs {
         create("release") {
-            storeFile = file("../plenka.keystore")
-            storePassword = "plenka2020"
-            keyAlias = "plenka"
-            keyPassword = "plenka2020"
+            /* 3.18: секреты больше не в git (аудит): путь/пароль — из окружения.
+               Экспорт перед сборкой: PLENKA_KS_PATH/PLENKA_KS_ALIAS/PLENKA_KS_PASS.
+               Без env — unsigned-сборка (подписывает apksigner отдельно) */
+            storeFile = file(System.getenv("PLENKA_KS_PATH") ?: "../plenka.keystore")
+            storePassword = System.getenv("PLENKA_KS_PASS")
+            keyAlias = System.getenv("PLENKA_KS_ALIAS") ?: "plenka"
+            keyPassword = System.getenv("PLENKA_KS_PASS")
         }
     }
 
@@ -28,7 +31,7 @@ android {
         release {
             isMinifyEnabled = false
             isShrinkResources = false
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (System.getenv("PLENKA_KS_PASS") != null) signingConfigs.getByName("release") else null
         }
         debug {
             applicationIdSuffix = ""

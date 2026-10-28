@@ -1,4 +1,5 @@
 #!/bin/bash
+: "${PLENKA_KS_PASS:?экспортируйте PLENKA_KS_PASS (и опц. PLENKA_KS_ALIAS/PLENKA_KS_PATH) перед сборкой}"
 # Сборка PLENKA-native-3.15.apk (v62) командной строкой: aapt2 + kotlinc + d8 + apksigner.
 # Подпись — восстановленный plenka.keystore (та же подпись, что 2.0–3.13 → ставится поверх).
 set -e
@@ -38,7 +39,7 @@ echo ">> 5/6 classes.dex → apk"
 echo ">> 6/6 zipalign + apksigner"
 "$BT/zipalign" -f -p 4 "$W/base.apk" "$W/aligned.apk"
 "$BT/apksigner" sign --ks "$PRJ/plenka.keystore" \
-  --ks-pass pass:plenka2020 --ks-key-alias plenka --key-pass pass:plenka2020 \
+  --ks-pass env:PLENKA_KS_PASS --ks-key-alias "${PLENKA_KS_ALIAS:-plenka}" --key-pass env:PLENKA_KS_PASS \
   --out "$OUT" "$W/aligned.apk"
 "$BT/apksigner" verify --print-certs "$OUT" | head -6
 echo ">> ГОТОВО: $OUT ($(stat -c%s "$OUT") байт)"

@@ -46,6 +46,7 @@ class PlenkaService : Service() {
         private const val CH_ID = "plenka_playback"
         private const val NID = 1
         private const val PAUSE_GRACE_MS = 60_000L
+        private const val WL_RENEW_MS = 180_000L   /* 3.18: продление WakeLock каждые 3 минуты */
 
         const val ACT_START = "ru.plenka.bg.START"
         const val ACT_CMD = "ru.plenka.bg.CMD"
@@ -136,12 +137,27 @@ class PlenkaService : Service() {
                         .also { it.setReferenceCounted(false) }
                 } catch (e: Exception) { Log.w(TAG, "wl new: ${e.message}") }
             }
-            try { wl?.let { if (!it.isHeld) { it.acquire(); Log.i(TAG, "bg: wakeLock взят") } } }
-            catch (e: Exception) {}
+            try {
+                wl?.let {
+                    /* 3.18: acquire без таймаута держал CPU вечно, если playing застревал
+                       при мёртвой странице. Берём на 5 минут и продлеваем циклом ниже */
+                    if (!it.isHeld) { it.acquire(WL_RENEW_MS + 60_000L); Log.i(TAG, "bg: wakeLock взят (5мин+продление)") }
+                }
+            } catch (e: Exception) {}
+            hd.removeCallbacks(wlRenew)
+            hd.postDelayed(wlRenew, WL_RENEW_MS)
         } else {
+            hd.removeCallbacks(wlRenew)
             try { wl?.let { if (it.isHeld) { it.release(); Log.i(TAG, "bg: wakeLock отпущен") } } }
             catch (e: Exception) {}
         }
+    }
+
+    /* 3.18: пока играет — продлеваем WakeLock каждые 3 минуты */
+    private val wlRenew = Runnable {
+        if (!running || !stPlaying) return@Runnable
+        try { wl?.let { if (!it.isHeld) it.acquire(WL_RENEW_MS + 60_000L) } } catch (e: Exception) {}
+        hd.postDelayed(wlRenew, WL_RENEW_MS)
     }
 
     /* ═══ уведомление (платформенный MediaStyle — androidx в проекте нет) ═══ */
@@ -209,7 +225,7 @@ class PlenkaService : Service() {
 
     override fun onDestroy() {
         running = false
-        hd.removeCallbacksAndMessages(null)
+        hd.removeCallbacksAndMessages(null)   /* 3.18: и wlRenew тоже */
         try { wl?.let { if (it.isHeld) it.release() } } catch (e: Exception) {}
         wl = null
         Log.i(TAG, "bg service: onDestroy")

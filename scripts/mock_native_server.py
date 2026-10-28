@@ -231,4 +231,4 @@ class TS(ThreadingHTTPServer):
 if __name__ == "__main__":
     print(f"media db: {[v['n'] for v in MEDIA_DB.values()]}")
     print(f"mock server 2.1 on http://127.0.0.1:{PORT}/")
-    TS(("", PORT), H).serve_forever()
+    TS(("127.0.0.1", PORT), H).serve_forever()   /* 3.18/аудит: мок отдаёт локальные файлы — слушаем только loopback */
