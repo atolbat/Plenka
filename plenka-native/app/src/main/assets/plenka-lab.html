@@ -96,8 +96,9 @@ function once(el,ev,ms){
     if(Array.isArray(ev)){ ev.forEach(function(e){el.removeEventListener(e,h);el.addEventListener(e,h)}) }
   });
 }
+var STOK=(function(){ try{ var m=(location.search||'').match(/[?&]tok=([A-Za-z0-9_-]+)/); return m?m[1]:'' }catch(e){ return '' } })();   /* 3.19: стенд за токен-гейтом моста */
 function urlBase(){ return location.origin }
-function mediaUrl(){ return urlBase()+'/v/'+($('#fId').value||Q.get('id')||'77') }
+function mediaUrl(){ var p=urlBase()+'/v/'+($('#fId').value||Q.get('id')||'77'); return STOK?(p+((p.indexOf('?')<0?'?':'&')+'tok='+STOK)):p }
 function durHint(){ var d=parseFloat($('#fDur').value||Q.get('dur')||'0'); return isFinite(d)&&d>0?d:0 }
 function tmoMs(){ var t=parseFloat($('#fTmo').value||'30'); return (isFinite(t)&&t>3?t:30)*1000 }
 function chunkBytes(){ var c=parseFloat($('#fChunk').value||'2'); return Math.max(262144,Math.min(16777216,(isFinite(c)?c:2)*1048576)) }
@@ -758,7 +759,7 @@ async function buildReport(){
   });
   /* журнал сервера (если есть эндпоинт) */
   try{
-    var r=await fetch(urlBase()+'/__srvlog',{cache:'no-store'});
+    var r=await fetch(urlBase()+'/__srvlog'+(STOK?('?tok='+STOK):''),{cache:'no-store'});
     if(r.ok){
       var j=await r.json();
       if(j&&j.streams&&j.streams.length){

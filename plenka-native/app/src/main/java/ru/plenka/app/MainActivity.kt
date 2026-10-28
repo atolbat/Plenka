@@ -171,7 +171,10 @@ class MainActivity : Activity() {
                 srvRec("fd-cache: ${en.key} выведен по простою 45с")
             }
         }
-        fdCache[key]
+        val hitE = fdCache[key]
+        if (hitE != null) hitE.users++   /* 3.19: захват счётчика в одном локе с поиском —
+            окно «fdGet вернул запись → сосед вытеснил и закрыл fd» (микро-TOCTOU) закрыто */
+        hitE
     }
     private fun fdPut(key: String, e: FdEntry) {
         synchronized(fdLock) {
@@ -274,13 +277,19 @@ class MainActivity : Activity() {
                     .put("n", r.name).put("m", r.mime).put("s", r.size)
                     .put("d", r.dur).put("w", r.w).put("h", r.h).put("t", r.t).put("k", r.k))
                 /* 3.18: атомарная запись — краш посреди writeText делал битый JSON,
-                   и весь реестр ручного выбора молча исчезал на следующем старте */
+                   и весь реестр ручного выбора молча исчезал на следующем старте.
+                   3.19: fsync перед rename (ext4 мог переставить rename раньше сброса
+                   данных — после kill/battery «picked.json» нулевой) и отказ rename
+                   больше НЕ удаляет живой оригинал (раньше гибли оба файла) */
                 val f = File(filesDir, "picked.json")
                 val tmp = File(filesDir, "picked.json.tmp")
-                tmp.writeText(a.toString())
+                java.io.FileOutputStream(tmp).use { fo ->
+                    fo.write(a.toString().toByteArray())
+                    fo.fd.sync()
+                }
                 if (!tmp.renameTo(f)) {
-                    f.delete()
-                    if (!tmp.renameTo(f)) tmp.delete()
+                    Log.w(TAG, "regSave: rename не прошёл — оригинал сохранён")
+                    tmp.delete()
                 }
             } catch (e: Exception) { Log.w(TAG, "regSave: ${e.message}") }
         }
@@ -320,7 +329,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         inst = this                       /* 3.10: фоновый сервис из шторки найдёт активити */
 
-        pool = Executors.newCachedThreadPool()
+        pool = Executors.newFixedThreadPool(6)   /* 3.19: потолок потоков — сосед-процесс не растит пул полусотней полуоткрытых соединений */
         thumbPool = Executors.newFixedThreadPool(2)
         server = PlenkaServer(this).also { it.start() }
 
@@ -345,12 +354,12 @@ class MainActivity : Activity() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val u = request.url
                 // наружу приложение не ходит: только собственный сервер
-                val mine = "http".equals(u.scheme, ignoreCase = true) && "127.0.0.1".equals(u.host) && u.port == PORT
+                val mine = "http".equals(u.scheme, ignoreCase = true) && "127.0.0.1".equals(u.host) && u.port == SRV_PORT   /* 3.19: фактический порт (фолбэк 8978+), не константа */
                 return !mine
             }
             override fun onReceivedError(view: WebView, errorCode: Int, description: String?, failingUrl: String?) {
                 if (failingUrl?.startsWith("http://127.0.0.1") == true) {
-                    Log.e(TAG, "webview err $errorCode $description @ $failingUrl")
+                    Log.e(TAG, "webview err $errorCode $description @ ${failingUrl?.substringBefore('?')}")   /* 3.19: токен моста не попадает в logcat */
                 }
             }
             /* 2.2: зонд живости после загрузки — если главный скрипт или мост мертвы,
@@ -358,7 +367,7 @@ class MainActivity : Activity() {
                а если всё живо — сразу толкаем синк, закрывая гонку «право выдано до загрузки» */
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
-                Log.i(TAG, "page loaded: $url")
+                Log.i(TAG, "page loaded: ${url.substringBefore('?')}")   /* 3.19: без токена */
                 webView.evaluateJavascript(
                     "(function(){try{return{diag:!!window.__plenkaDiag," +
                         "main:!!(window.__plenkaDiag&&window.__plenkaDiag.marks['main-start'])," +
@@ -395,6 +404,17 @@ class MainActivity : Activity() {
                         }
                     }
                 }
+            }
+            /* 3.19: краш рендерера Chromium (битый 4К, OEM-баг) больше не убивает весь процесс
+               (дефолт на API 29+): пересобираем активити — сервер/WebView/токен поднимутся заново */
+            override fun onRenderProcessGone(view: WebView, detail: WebViewClient.RenderProcessGoneDetail): Boolean {
+                Log.e(TAG, "render gone: crashed=${detail.didCrash()}")
+                try {
+                    (view.parent as? android.view.ViewGroup)?.removeView(view)
+                    view.destroy()
+                } catch (e: Exception) { Log.w(TAG, "render gone cleanup: ${e.message}") }
+                try { recreate() } catch (e: Exception) { Log.w(TAG, "render gone recreate: ${e.message}") }
+                return true
             }
         }
         webView.webChromeClient = object : WebChromeClient() {
@@ -522,14 +542,15 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == RC_NOTIF) {   /* 3.19: ветка вынесена из-под RC_PERM — раньше результат уведомлений сюда не доезжал никогда */
+            val okN = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+            Log.i(TAG, "perm result: NOTIFICATIONS ok=$okN")
+            return
+        }
         if (requestCode == RC_PERM) {
             val ok = grantResults.isNotEmpty() &&
                 permissions.indices.all { grantResults.getOrNull(it) == PackageManager.PERMISSION_GRANTED }
             permDialogUp = false
-            if (requestCode == RC_NOTIF) {
-                Log.i(TAG, "perm result: NOTIFICATIONS ok=$ok")   /* 3.18: отдельный ветка — не мешает медиа-правам */
-                return
-            }
             permDeniedSession = !ok
             Log.i(TAG, "perm result: ok=$ok perms=${permissions.joinToString()}")
             // страница могла ещё не подняться, когда упал первый результат —
@@ -599,7 +620,7 @@ class MainActivity : Activity() {
             if (name.isEmpty()) name = u.lastPathSegment ?: ("file " + System.currentTimeMillis())
 
             val ext = name.substringAfterLast('.', "").lowercase(Locale.US)
-            if (ext in DEAD_EXT) { Log.i(TAG, "picked skipped (dead ext): $name"); continue }
+            if (ext in DEAD_EXT) { Log.i(TAG, "picked skipped (dead ext), len=${name.length}"); continue }   /* 3.19: приватность — имена не пишем в logcat */
 
             var dur = 0L; var w = 0; var h = 0
             var mmr: MediaMetadataRetriever? = null
@@ -630,7 +651,7 @@ class MainActivity : Activity() {
                 .put("id", entry.seq).put("k", entry.k).put("n", entry.name).put("m", entry.mime)
                 .put("d", entry.dur).put("w", entry.w).put("h", entry.h)
                 .put("s", entry.size).put("t", entry.t))
-            Log.i(TAG, "picked: #${entry.seq} $name mime=$mime size=$size dur=$dur ${w}x${h} [${entry.k}]")
+            Log.i(TAG, "picked: #${entry.seq} len=${name.length} mime=$mime size=$size dur=$dur ${w}x${h} [${entry.k}]")   /* 3.19: без имени файла */
         }
         regSave()
         val regSize: Int
@@ -712,8 +733,8 @@ class MainActivity : Activity() {
         if (isFinishing || inPip || pipAuto || !lastPlaying) return
         try {
             PlenkaService.push(this, lastPlaying, lastTitle, lastArtist, lastPosMs, lastDurMs)
-            Log.i(TAG, "bg: сервис запущен ($why) «${lastTitle.take(32)}» " +
-                "${lastPosMs / 1000}с/${lastDurMs / 1000}с")
+            Log.i(TAG, "bg: сервис запущен ($why) media=${if (lastTitle.isNotEmpty()) 1 else 0} " +
+                "${lastPosMs / 1000}с/${lastDurMs / 1000}с")   /* 3.19: название трека не пишем в logcat */
         } catch (e: Exception) { Log.w(TAG, "bg start ($why): ${e.message}") }
     }
 
@@ -1505,7 +1526,12 @@ class MainActivity : Activity() {
                     val ab = ByteArray(24)
                     java.security.SecureRandom().nextBytes(ab)
                     t = ab.joinToString("") { "%02x".format(it) }
-                    try { tf.writeText(t) } catch (e: Exception) {}
+                    try {   /* 3.19: атомарная запись — обрыв при writeText перегенерировал бы токен,
+                               а в IDB оставались URL со старым: постоянные 404 у старых записей */
+                        val tmpT = File(ctx.filesDir, "srvtoken.tmp")
+                        java.io.FileOutputStream(tmpT).use { fo -> fo.write(t.toByteArray()); fo.fd.sync() }
+                        if (!tmpT.renameTo(tf)) tmpT.delete()
+                    } catch (e: Exception) {}
                 }
                 MainActivity.SRV_TOKEN = t
             } catch (e: Exception) { Log.e(TAG, "token: ${e.message}") }
@@ -1654,9 +1680,11 @@ class MainActivity : Activity() {
                 path != "/favicon.ico" && path != "/seek" && path != "/seek/" &&
                 path != "/lab" && path != "/lab/") {
                 val tok = req.tok
-                val host = req.headers["host"]
-                if (tok == null || tok != MainActivity.SRV_TOKEN ||
-                    (host != null && !host.startsWith("127.0.0.1") && !host.startsWith("localhost"))) {
+                val host = req.headers["host"]?.substringBefore(':')
+                val tokOk = tok != null && MainActivity.SRV_TOKEN.isNotEmpty() &&
+                    java.security.MessageDigest.isEqual(tok.toByteArray(), MainActivity.SRV_TOKEN.toByteArray())   /* 3.19: constant-time сравнение */
+                val hostOk = host == null || host == "127.0.0.1" || host == "localhost"   /* 3.19: точное имя хоста, не префикс (127.0.0.10 больше не проходит) */
+                if (!tokOk || !hostOk) {
                     srvRec("${req.method} $path → 404 (доступ без токена/чужой Host)")
                     writeSimple(out, 404, "text/plain; charset=utf-8", "not found")
                     return true
@@ -1989,9 +2017,10 @@ class MainActivity : Activity() {
         private fun serveOvh(out: OutputStream, req: Request, e: FdEntry): Boolean {
             val t0 = System.currentTimeMillis()
             val total = e.size
-            if (total <= 0) return false
-            synchronized(fdLock) { e.users++ }                /* 3.18: закрытие под pread невозможно */
             try {
+                /* 3.19: users++ перенесён в fdGet (единый лок с поиском); ранний выход
+                   тоже проходит через finally и снимает захват */
+                if (total <= 0) return false
                 return serveOvhInner(out, req, e)
             } finally {
                 synchronized(fdLock) {

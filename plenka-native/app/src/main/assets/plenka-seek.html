@@ -1354,7 +1354,9 @@ function msebSeekFast(el,t){                     /* 50: финал жеста п
 
 /* ═══════════════════════ ЦЕЛЬ ═══════════════════════ */
 var IT=null, VLIST=[];
-function mkItem(fid,dur){ return {id:'v:'+fid,kind:'native',audio:false,url:'/v/'+fid,name:'media '+fid,
+var STOK=(function(){ try{ var m=(location.search||'').match(/[?&]tok=([A-Za-z0-9_-]+)/); return m?m[1]:'' }catch(e){ return '' } })();   /* 3.19: стенд за токен-гейтом моста — данные без tok отдают 404 */
+function sTok(p){ return STOK?(p+((p.indexOf('?')<0?'?':'&')+'tok='+STOK)):p }
+function mkItem(fid,dur){ return {id:'v:'+fid,kind:'native',audio:false,url:sTok('/v/'+fid),name:'media '+fid,
   size:0,duration:(dur>0?dur:0),w:0,h:0,position:0} }
 async function fillMeta(it){
   if(!it.size){                                  /* Chrome-режим: размер — HEAD-запросом (мосту нужен b.size) */
@@ -1408,7 +1410,7 @@ async function initList(){
     /* 50: в Chrome списка из моста нет — берём его с сервера: /__medialist (тот же
         MediaStore-скан, только лёгкий). Файл выбирается из списка — ИСКАТЬ АЙДИ НЕ НУЖНО */
     try{
-      var r=await fetch('/__medialist',{cache:'no-store'});
+      var r=await fetch(sTok('/__medialist'),{cache:'no-store'});
       src=await r.json();
       if(!src||!src.ok){ NJ('скан','/__medialist: '+((src&&src.err)||('HTTP '+r.status))); src=null }
     }catch(eL){ NJ('скан','/__medialist недоступен: '+eL) }
@@ -1883,7 +1885,7 @@ $('#bCopy').addEventListener('click',function(){
 });
 $('#bSrv').addEventListener('click',async function(){
   try{
-    var r=await fetch('/__srvlog',{cache:'no-store'});
+    var r=await fetch(sTok('/__srvlog'),{cache:'no-store'});
     var j=await r.json();
     var st=(j.streams||[]).slice(-14).join('\n');
     $('#report').value+='\n\n— потоки сервера (последние 14) —\n'+(st||'—');

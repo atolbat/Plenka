@@ -22,7 +22,7 @@
       в git больше не лежат; без env — unsigned-сборка (подписывает apksigner).
   N12 Манифест: usesCleartextTraffic → network_security_config (cleartext только
       для 127.0.0.1/localhost).
-  N13 build_apk61..64.sh: --ks-pass env: вместо pass:plenka2020.
+  N13 build_apk61..64.sh: --ks-pass env: вместо env:PLENKA_KS_PASS.
   N14 mock_native_server.py: bind 127.0.0.1 вместо 0.0.0.0.
   N15 .gitignore: *.keystore/*.jks/node_modules и пр.
 """
@@ -578,9 +578,9 @@ ok = patch_file("plenka-native/app/build.gradle.kts", [
 """    signingConfigs {
         create("release") {
             storeFile = file("../plenka.keystore")
-            storePassword = "plenka2020"
+            storePassword = System.getenv("PLENKA_KS_PASS")   /* 3.19: литерал убран из git */
             keyAlias = "plenka"
-            keyPassword = "plenka2020"
+            keyPassword = System.getenv("PLENKA_KS_PASS")   /* 3.19: литерал убран из git */
         }
     }
 
@@ -613,9 +613,9 @@ ok = patch_file("plenka-native/app/build.gradle.kts", [
 import glob
 for sh in sorted(glob.glob(os.path.join(ROOT, "scripts/build_apk6*.sh"))):
     src = open(sh, encoding='utf-8').read()
-    if "pass:plenka2020" in src:
+    if "env:PLENKA_KS_PASS" in src:
         src = src.replace(
-            "--ks-pass pass:plenka2020 --ks-key-alias plenka --key-pass pass:plenka2020",
+            "--ks-pass env:PLENKA_KS_PASS --ks-key-alias plenka --key-pass env:PLENKA_KS_PASS",
             "--ks-pass env:PLENKA_KS_PASS --ks-key-alias \"${PLENKA_KS_ALIAS:-plenka}\" --key-pass env:PLENKA_KS_PASS")
         # guard: пароль обязан быть в окружении
         if "PLENKA_KS_PASS" not in src.split("\n\n")[0] and "PLENKA_KS_PASS=" not in src:
@@ -628,7 +628,7 @@ for sh in sorted(glob.glob(os.path.join(ROOT, "scripts/build_apk6*.sh"))):
         open(sh, 'w', encoding='utf-8').write(src)
         print(f"[OK]   {os.path.basename(sh)}: пароль из env")
     else:
-        print(f"[SKIP] {os.path.basename(sh)}: pass:plenka2020 не найден")
+        print(f"[SKIP] {os.path.basename(sh)}: env:PLENKA_KS_PASS не найден")
 
 ok = patch_file("scripts/mock_native_server.py", [
     ('N14 bind 127.0.0.1',

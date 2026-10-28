@@ -721,7 +721,7 @@ body.pip #gestureLayer{touch-action:manipulation}
    Отдельный скрипт ДО всего приложения: только ES5, инлайн-стили, ноль зависимостей.
    Живёт, даже если главный скрипт мёртв: ловит его ошибки и уводит их в logcat
    натива, журнал «куда нажали, что получили» — туда же. Кнопка «ДИАГ» и экран
-   отчёта убраны в 64 (репорт юзера); страница v64 / оболочка 3.17. */
+   отчёта убраны в 64 (репорт юзера); страница v66 / оболочка 3.19. */
 (function(){
 var D=window.__plenkaDiag={errs:[],marks:{},journal:[]};
 var T0=Date.now();
@@ -3810,6 +3810,7 @@ function dropBadItem(it,silent){
   var curO=(currentIdx>=0&&items[currentIdx])?items[currentIdx]:null;   /* 65: индекс привязан к ССЫЛКЕ,
     а не к позиции: удалили играющего (или соседа слева) — раньше currentIdx молча указывал на чужого */
   items=items.filter(function(x){return x!==it});
+  try{ it._dead=1 }catch(e){}   /* 66: томстон — фоновый persistItem не воскресит запись */
   currentIdx=curO?(curO===it?-1:items.indexOf(curO)):-1;
   idbDel('items',it.id); idbDel('blobs',it.id); idbDel('kv','subs:'+it.id); idbDel('handles','fh::'+it.id);
   forgetUrl(it);
@@ -3827,7 +3828,7 @@ function dropBadItem(it,silent){
 }
 var hadLib=false;
 function persistItem(it){
-  if(!idbOK)return;
+  if(!idbOK||it._dead)return;   /* 66: удалённое не воскресает из фоновых записей */
   if(!hadLib){ hadLib=true; try{localStorage.plenkaHad='1'}catch(e){} }   /* для скелетона на следующем старте */
   var meta={id:it.id,name:it.name,size:it.size,mtime:it.mtime,kind:it.kind,dir:it.dir,url:it.url,
     audio:it.audio,duration:it.duration,position:it.position,addedAt:it.addedAt,fframePos:it.fframePos||0,views:it.views||0,
@@ -3843,6 +3844,7 @@ function persistItem(it){
 async function removeItem(it){
   var curO=(currentIdx>=0&&items[currentIdx])?items[currentIdx]:null;   /* 65: пересчёт по ссылке */
   items=items.filter(function(x){return x!==it});
+  try{ it._dead=1 }catch(e){}   /* 66: томстон против воскрешения */
   if(hiddenSet[it.id]){ delete hiddenSet[it.id]; saveHidden(); }
   rmSet[it.id]={n:it.name,a:Date.now(),k:it.kind}; saveRm();   /* 57: реестр — крестик больше
                                      не «временный»: после перезахода видео не возвращается,
@@ -3930,7 +3932,13 @@ function rememberUrl(id,url){
 function forgetUrl(it){
   var i=urlCacheOrder.indexOf(it.id);
   if(i>=0)urlCacheOrder.splice(i,1);
-  if(urlCache[it.id]){ try{URL.revokeObjectURL(urlCache[it.id])}catch(e){} delete urlCache[it.id]; }
+  if(urlCache[it.id]){
+    var uF=urlCache[it.id];
+    if((vActive&&(vActive.src===uF||vActive.currentSrc===uF))||
+       (vStandby&&(vStandby.src===uF||vStandby.currentSrc===uF))){ delete urlCache[it.id]; return; }   /* 66: URL ещё прикреплён к A/B — из кэша вон, но не revoke (живой элемент) */
+    try{URL.revokeObjectURL(uF)}catch(e){}
+    delete urlCache[it.id];
+  }
 }
 function playVis(){                               /* 24.14: список раздела ИГРАЮЩЕГО файла, а не текущего экрана */
   var cur=currentIdx>=0?items[currentIdx]:null;
@@ -4056,19 +4064,30 @@ function sbTap(sb){                    /* 42: ключевые события в
    теперь loadstart/durationchange/loadedmetadata/error/abort видны в ДИАГе построчно */
   try{
     var g=(sb._tapG=(sb._tapG||0)+1);
+    if(sb._tapFns){   /* 66: снимаем прошлый комплект — ретаргеты гиганта больше не копят слушателей */
+      for(var tf=0;tf<sb._tapFns.length;tf++){ try{ sb.removeEventListener(sb._tapFns[tf].ev,sb._tapFns[tf].h) }catch(eT1){} }
+    }
+    sb._tapFns=[];
     ['loadstart','durationchange','loadedmetadata','error','abort'].forEach(function(ev){
-      sb.addEventListener(ev,function h(){
+      var h=function(){
         try{
           if(sb._tapG!==g){ sb.removeEventListener(ev,h); return }
           if(ev==='error')NJ('open','событие: error code='+((sb.error&&sb.error.code)||'?'));
           else NJ('open','событие: '+ev+(ev==='durationchange'?(' (длительность='+(isFinite(sb.duration)?Math.round(sb.duration):'?')+'с)'):''));
           if(ev==='loadedmetadata'||ev==='error'||ev==='abort')sb.removeEventListener(ev,h);
         }catch(e2){}
-      });
+      };
+      sb.addEventListener(ev,h); sb._tapFns.push({ev:ev,h:h});
     });
   }catch(e){}
 }
-async function loadStandby(it,my){
+async function loadStandby(it,my,out){   /* 66: out={why,err} — потребитель читает причину СВОЕГО вызова;
+  конкурентный preheat/prefetch не подменяет глобальные lsWhy/lsErr между await'ами */
+  var r=await loadStandby1(it,my);
+  if(out){ out.why=lsWhy; out.err=lsErr; }
+  return r;
+}
+async function loadStandby1(it,my){
   var sb=vStandby;
   if(!sb){ lsWhy='error'; return false; }
   lsWhy='';
@@ -4096,7 +4115,7 @@ async function loadStandby(it,my){
       if(okW&&my===playToken)warmStandby(sb);
       return okW;
     }
-    sb._loading=true; owns=true;
+    sb._loading=true; owns=true; sb._loadOwn=my;   /* 66: владелец флага — по личности, не по булеву */
     var u;
     lsErr='';
     if(it.kind==='url'||it.kind==='native'){ u=it.url;
@@ -4182,7 +4201,8 @@ async function loadStandby(it,my){
     if(ok2&&my===playToken)warmStandby(sb);
     return ok2;
   }finally{
-    if(owns&&gen===sb._lgen)sb._loading=false;   /* цель перезатёрта более новым запросом — флаг оставляем ему */
+    if(owns&&sb._loadOwn===my&&(gen==null||gen===sb._lgen))sb._loading=false;   /* 66: владелец снимает флаг даже выйдя
+      до своего gen-чекпоинта — двойной неудачный pre-retarget больше не отключает префетч навсегда */
   }
 }
 /* ═══ 31.3: эпоха кадров ═══ totalVideoFrames — накопительный счётчик ЭЛЕМЕНТА: в окне между
@@ -4225,14 +4245,14 @@ function swapRoles(){
     }
   }catch(e){}
   old._seekDone=false;                          /* при возврате к нему — перескок на сохранённую позицию */
-  (function(oldEl){                             /* 47: уходящий HIGH-RES элемент (теперь standby) держит живой
+  (function(oldEl,lgen0){                       /* 47: уходящий HIGH-RES элемент (теперь standby) держит живой
       4К-декодер + буфер всё время, пока играет следующий трек — на бюджетном SoC это
       «лаги высокого разрешения» и фризы при анимациях UI. Через 3с после склейки
       (кадр-маска перехода уже не нужен) отпускаем его поток полностью; вернулся
       в актив — не трогаем; холодный перевход ~0.3с (moov в начале) */
     setTimeout(function(){
       try{
-        if(oldEl!==vStandby||oldEl===vActive||oldEl._loading)return;
+        if(oldEl!==vStandby||oldEl===vActive||oldEl._loading||oldEl._lgen!==lgen0)return;   /* 66: элемент перезаряжен после свапа — не наша цель */
         var pid=oldEl._pid,it=null;
         for(var q=0;q<items.length;q++)if(items[q].id===pid){it=items[q];break}
         if(!it||it.audio||((it.w||0)*(it.h||0))<2200000)return;
@@ -4244,7 +4264,7 @@ function swapRoles(){
         NJ('open','4К-элемент освобождён (декодер/память не держим)');
       }catch(e){}
     },3000);
-  })(old);
+  })(old,old._lgen);
   if(AG&&AG.srcs)reconnectGraph(old,sb);
   if(!curIsAudio())sndGate=playToken;           /* 39.5: звук нового трека — строго после первого ПОКАЗАННОГО кадра */
   applyAudio();
@@ -4259,7 +4279,7 @@ function swapRoles(){
      кадра (rVFC); старый замерший кадр остаётся маской. */
   if(!curIsAudio()&&old.readyState>0){       /* 27.2: hold ВСЕГДА (постер — не условие: под ним
     элемент тоже мог показать прозрачность/устаревший кадр) */
-    var revealed=false,paintDone=false;
+    var revealed=false,paintDone=false,softN=0;
     var painted=function(){ return frameProof(sb) };   /* 31.3: эпоха — голый счётчик обманывался
       устаревшим значением прошлого ролика (окно до сброса статистики), маски падали раньше кадра */
     var finish=function(){ if(paintDone)return; paintDone=true;
@@ -4271,6 +4291,8 @@ function swapRoles(){
       if(paintDone)return;
       if(sb!==vActive)return;                /* свап перебит — экраном владеет более новый */
       if(sb.error||painted()){ finish(); return; }
+      if(++softN>66){ finish(); return; }    /* 66: абсолютный кап ~10с — «живой» элемент без кадра и без
+                                                error больше не держит маски (и интервал) вечно */
       setTimeout(softFinish,150);            /* кадр ещё не показан — маски держим, проверим снова */
     };
     var reveal=function(){                    /* кадр гарантированно декодирован (readyState≥2) */
@@ -5004,12 +5026,12 @@ function snapPoster(it){           /* кадр с запасного элеме�
    seeked) — догоняем readyState≥2 poll'ом (кап 480мс), склейку не блокируем; ссылку на элемент
    захватываем — после swap vStandby уже чужой. Не успели до скрытия постера — кэш всё равно согрет */
   try{
-    var sb=vStandby;
+    var sb=vStandby, myTok=playToken;
     if(!sb||sb._pid!==it.id||sb.error)return;
     var tries=0;
     (function poll(){
       try{
-        if(sb.error||sb._pid!==it.id)return;               /* цель перезатёрта — чужой кадр не снимаем */
+        if(myTok!==playToken||sb.error||sb._pid!==it.id)return;   /* 66: токен открытия + цель — чужой кадр не пишем в постер/подложку */
         if(sb.readyState<2||!sb.videoWidth){               /* кадр ещё не декодирован — короткий догон */
           if(++tries>12)return;
           setTimeout(poll,40); return;
@@ -6474,7 +6496,7 @@ async function msebStartGate(el){                   /* 51: СТАРТ БЕЗ З�
   }catch(e){}
 }
 async function openItem(idx,opts){
-  opts=opts||{}; var my=++playToken;
+  opts=opts||{}; var my=++playToken; lastSwAt=Date.now();   /* 66: метка старта переключения — гвард двойного авто-перехода */
   cardPreviewStop();                                 /* открытие гасит превью карточки (если было) */
   try{ ffAbort() }catch(e){}                         /* 2.5: фоновый декодер fframe не делит I/O с открытием */
   var keepMini=!!opts.keepMini&&MINI.mode==='local';   /* автопереход внутри мини-панели: плеер не открываем */
@@ -6489,6 +6511,8 @@ async function openItem(idx,opts){
   hideEnd(); ab={a:null,b:null}; updAB(); setZoom(1,0,0,true);
   $('#statsPanel').hidden=true;
   currentIdx=idx;
+  try{ if(MIRROR.on&&!mirrorActive())mirrorStop() }catch(eM6){}   /* 66: окно PiP могло уйти без события —
+    старое зеркало не должно висеть над новой целью до ближайшего тика pump'а (до 0.8с чужого кадра) */
   try{ player.classList.toggle('hinoanim',hiResItem(it)) }catch(e){}   /* 48: высокий рес — бары без анимации (см. CSS) */
   hudPrewind(it);                                  /* 24.10: линия сразу в позиции нового трека */
   if(it.status==='bad'){ it.status='new'; queueProbe(it); }   /* 24.5: вторая попытка пробы по тапу */
@@ -6506,7 +6530,8 @@ async function openItem(idx,opts){
   entryUI=!opts.silent;
   $('#strip').hidden=true; stripSig=null;   /* сброс кэша: лента обязана перерисоваться при входе */
   /* позицию уходящего видео сохраняем, пока активный элемент ещё играет его */
-  if(!fromEnded&&prevIdx>=0&&items[prevIdx]&&vActive.readyState>0&&vActive.currentTime>1){
+  if(!fromEnded&&prevIdx>=0&&items[prevIdx]&&vActive.readyState>0&&vActive.currentTime>1
+    &&vActive._pid===items[prevIdx].id){   /* 66: позицию пишем только треку, которым элемент реально владеет */
     items[prevIdx].position=vActive.currentTime;
     persistItem(items[prevIdx]);
   }
@@ -6552,19 +6577,20 @@ async function openItem(idx,opts){
         уходящий кадр прикрыт), серверный кадр — только после подтверждения «первый»;
         чужой/дальний кадр с прыжком на видео больше не показываем */
     else hidePoster(true);
-    var ok=await loadStandby(it,my);
+    var lsOut={};                                    /* 66: причина отказа этого вызова — своя (out), не глобальная */
+    var ok=await loadStandby(it,my,lsOut);
     if(!ok&&fileErr==='NotAllowedError'&&my===playToken){
       var granted=await requestFolderPerm(it);       /* тап = жест: браузер покажет запрос сразу */
-      if(granted)ok=await loadStandby(it,my);        /* и продолжаем без переоткрытия файла */
+      if(granted)ok=await loadStandby(it,my,lsOut);  /* и продолжаем без переоткрытия файла */
     }
-    if(!ok&&lsWhy==='timeout'&&(it.kind==='native'||it.kind==='url')&&my===playToken){
+    if(!ok&&(lsOut.why||lsWhy)==='timeout'&&(it.kind==='native'||it.kind==='url')&&my===playToken){
       try{ await natvStreamDiag(it) }catch(e0){}     /* 2.6: сервер жив? moov? за сколько первые байты? — ДО слепой перезагрузки */
       NJ('open','таймаут метаданных ('+fmtSize(it.size||0)+') — перезагружаем элемент, вторая попытка');
       try{ if(vStandby._mseb)msebDestroy(vStandby) }catch(e1){}   /* 43: мост не переживает перезагрузку элемента */
       try{ vStandby.pause(); vStandby.removeAttribute('src'); try{ vStandby.load() }catch(e2){} }catch(e){}
-      ok=await loadStandby(it,my);                   /* 2.4: moov уже в кэше страницы/ОС —
+      ok=await loadStandby(it,my,lsOut);             /* 2.4: moov уже в кэше страницы/ОС —
         вторая загрузка быстрее первой, гиганты больше «не открываются» */
-      if(!ok&&lsWhy==='timeout'&&it.kind==='native'&&(it.size||0)>2e8&&my===playToken){
+      if(!ok&&(lsOut.why||lsWhy)==='timeout'&&it.kind==='native'&&(it.size||0)>2e8&&my===playToken){
         ok=await natvGiantPatience(it,my);           /* 42: гигант мог просто тянуться медленно —
           финал НЕ выносим сразу: ждём в фоне до 49с (плеер с постером на экране),
           журнал живёт строками состояния; ожил — доводим позицию и входим как обычно */
@@ -6572,12 +6598,20 @@ async function openItem(idx,opts){
     }
     if(my!==playToken)return;                      /* постером владеет более новый openItem — гасить чужой нельзя:
       иначе до склейки виден кадр прошлого видео («кадр одной, звук другой») */
-    if(!ok&&(lsWhy==='abort'||lsWhy==='race')){ hudHoldId=null; return; }   /* 62: перебито/отменено — HUD рисует по факту */   /* 24.4: перебито другим открытием/прогревом — не ошибка.
-      28.1: постер/freeze НЕ сбрасываем: под ними ждёт кадр цели — оголять экран нельзя,
-      следующим тапом/склейкой всё перезапишется */
+    if(!ok&&((lsOut.why||lsWhy)==='abort'||(lsOut.why||lsWhy)==='race')){   /* 62: перебито/отменено — HUD рисует по факту */
+      if(hudHoldId===(it&&it.id))hudHoldId=null;   /* 66: гасим только СВОЙ hold — race-выход больше не мигает чужим HUD */
+      try{ setVblank(prevIdx>=0?items[prevIdx]:null) }catch(eV0){}   /* 66: открытие мертво (токен наш — это не новый openItem):
+        маска возвращается к возобновлённому треку — кадр недооткрытой цели больше не торчит
+        в леттербоксе играющего («под видео видно другое») */
+      try{ var cR0=-1; for(var qR0=0;qR0<items.length;qR0++)if(vActive._pid&&items[qR0]&&items[qR0].id===vActive._pid){cR0=qR0;break}
+        currentIdx=cR0>=0?cR0:prevIdx; }catch(eR1){}   /* 66: preheat-гонка не оставляет currentIdx на неиграющем */
+      return; }   /* 24.4: перебито другим открытием/прогревом — не ошибка */
     if(!ok){
       hudHoldId=null;                            /* 62: не открылось — панель показывает реальность активного */
-      NJ('open','НЕ открылось: why='+lsWhy+' err='+((vStandby&&vStandby.error&&vStandby.error.code)||'-')+
+      try{ var cR=-1; for(var qR=0;qR<items.length;qR++)if(vActive._pid&&items[qR]&&items[qR].id===vActive._pid){cR=qR;break}
+        currentIdx=cR>=0?cR:prevIdx; }catch(eR2){}   /* 66: currentIdx — к фактически играющему: иначе следующий
+          openItem запишет vActive.currentTime (чужой трек) в позицию никогда не игравшего item */
+      NJ('open','НЕ открылось: why='+(lsOut.why||lsWhy)+' err='+((vStandby&&vStandby.error&&vStandby.error.code)||'-')+
         (lsErr?(' деталь='+lsErr):'')+
         ' rs='+((vStandby&&vStandby.readyState)||'-')+' net='+((vStandby&&vStandby.networkState)||'-')+   /* 42: чем закончилось состояние элемента — видно в ДИАГ */
         ' src='+(''+(it.url||'')).slice(-44));      /* 2.4/2.5: причина — в журнал/ДИАГ, не вслепую */
@@ -6586,12 +6620,15 @@ async function openItem(idx,opts){
       try{ if(wasPrevPlaying&&vActive._pid&&(!it||it.id!==vActive._pid))vActive.play() }catch(eP){}   /* 65: не оставляем
         уходящий трек замороженным кадром без звука — возвращаем то, что играло до неудачного открытия */
       hidePoster(true); hideFreeze();
-      if(lsWhy==='gone'){                          /* 2.5: файл недоступен на устройстве — честно и сразу;
+      try{ setVblank(prevIdx>=0?items[prevIdx]:null) }catch(eV1){}   /* 66: подложка — на возобновлённый трек (его кадр той же
+        геометрии, что и возобновляемое видео): кадр упавшей цели не торчит
+        в леттербоксе возобновлённого воспроизведения при другом aspect ratio */
+      if((lsOut.why||lsWhy)==='gone'){                          /* 2.5: файл недоступен на устройстве — честно и сразу;
         карточку уберёт фоновый перескан (merge видит «исчезло») */
         toast(t('natvOpenGone'),'err');
         try{ if(it.kind==='native')setTimeout(function(){ try{ nativeSync(false) }catch(e2){} },600); }catch(e3){}
       }
-      else if(lsErr&&it.kind==='native')toast(t('natvOpenErr',{w:lsErr.slice(0,44)}),'err');
+      else if((lsOut.err||lsErr)&&it.kind==='native')toast(t('natvOpenErr',{w:(lsOut.err||lsErr).slice(0,44)}),'err');
       else toast(t(fileErr==='NotAllowedError'||fileErr==='SecurityError'?'errPerm':'errOpenFail'),'err');
       if((fileErr==='NotAllowedError'||fileErr==='SecurityError')&&it.kind==='dir'){
         pendingPerm=null; $('#folderBanner').hidden=false;   /* баннер вместо тихой порчи (папки) */
@@ -6669,7 +6706,7 @@ async function openItem(idx,opts){
       var saved=await idbGet('kv','subs:'+it.id);
       if(my!==playToken)return;
       if(saved&&saved.text){ setSubs(saved.text,saved.name); }
-      else await autoFindSubs(it);
+      else await autoFindSubs(it,my);   /* 66: токен внутрь — сабы прошлого трека не встанут на новый */
     }catch(e){}
   })();
   requestAnimationFrame(function(){
@@ -6917,6 +6954,8 @@ VOn('loadedmetadata',function(){
   }
 });
 VOn('ended',function(){
+  try{ if(Date.now()-(window.lastSwAt||0)<800&&vActive&&vActive._pid&&items[currentIdx]&&items[currentIdx].id!==vActive._pid)return; }catch(e0W){}   /* 66: ended УХОДЯЩЕГО
+    трека против свежего next: currentIdx уже на новом — авто-переход от старого не перескакивает через новый */
   natvWakePip();                                    /* native 2.0: трек кончился — PiP-автовход и wake больше не нужны */
   if((video.readyState||0)<1||isNaN(video.duration)||video.duration<=0){
     toast(t('errOpenFail'),'err');   /* 33.1: «ended» битой загрузки (метаданных нет) — не конец файла:
@@ -6968,7 +7007,7 @@ function shuffleSeq(vis){
 /* 37.1: троттл ручной смены трека (100мс) — гард от дубль-событий: click вслед за
    свайпом, mediaSession поверх кнопки, двойной тап по карточке ленты. Автопереход
    по ended и первый вход — не ручные, троттлом не задеты */
-var MANSW={last:0};
+var MANSW={last:0},lastSwAt=0;   /* 66: старт последнего openItem — гвард ended */
 function manSwOk(){
   var n=performance.now();
   if(n-MANSW.last<100)return false;
@@ -7185,13 +7224,13 @@ $('#timeBox').addEventListener('click',function(){
 });
 /* прогресс-бар */
 (function(){
-  var bar=$('#pbar'), tip=$('#pTip'), drag=false, lastSeekT=0, sentPos=-1;
+  var bar=$('#pbar'), tip=$('#pTip'), drag=false, lastSeekT=0, sentPos=-1, pbarPid='';
   function posT(e){ var r=bar.getBoundingClientRect();
     return clamp((e.clientX-r.left)/r.width,0,1)*(video.duration||0); }
   function dragUI(t){ var p=t/video.duration*100; lastPct=p; hudEls.fill.style.width=p+'%'; hudEls.knob.style.left=p+'%'; }
   bar.addEventListener('pointerdown',function(e){
     if(!isFinite(video.duration))return;
-    drag=true; pbarDrag=true; entryUI=false; bumpCtl();
+    drag=true; pbarDrag=true; entryUI=false; bumpCtl(); pbarPid=(vActive&&vActive._pid)||'';   /* 66: жест привязан к треку */
     try{ bar.setPointerCapture(e.pointerId) }catch(err){}
     pbarPos=posT(e); dragUI(pbarPos);
     seek(pbarPos); sentPos=pbarPos;
@@ -7211,7 +7250,8 @@ $('#timeBox').addEventListener('click',function(){
   });
   /* 25.12: на тапе seek уже ушёл на pointerdown — повтор той же позиции не шлём
      (лишняя запись currentTime на части сборок перезапускает поиск и добавляет задержку) */
-  bar.addEventListener('pointerup',function(e){ if(drag){ if(sentPos<0||Math.abs(pbarPos-sentPos)>.05)seek(pbarPos,true); tip.style.display='none'; } drag=false; pbarDrag=false; });
+  bar.addEventListener('pointerup',function(e){ if(drag&&((vActive&&vActive._pid)||'')===pbarPid){ if(sentPos<0||Math.abs(pbarPos-sentPos)>.05)seek(pbarPos,true); tip.style.display='none'; }   /* 66: трек сменился посреди драга — позиция старого не льётся в новый */
+    drag=false; pbarDrag=false; });
   bar.addEventListener('pointercancel',function(){ drag=false; pbarDrag=false; });
   bar.addEventListener('pointerleave',function(){ if(!drag)tip.style.display='none'; });
 })();
@@ -7436,9 +7476,10 @@ gl.addEventListener('pointermove',function(e){
       if(G.mode==='h'&&(G.start.x<stage.clientWidth*.2||G.start.x>stage.clientWidth*.8))G.mode='dead';
       if(G.mode==='h'&&S.seekMode==='bar')G.mode='dead';
     }
-    if(G.mode==='h'){ G.wasPlaying=!video.paused; if(G.wasPlaying)video.pause();
+    if(G.mode==='h'){ G.hPid=(vActive&&vActive._pid)||''; G.wasPlaying=!video.paused; if(G.wasPlaying)video.pause();
       updStateBadge(); }   /* 39.3: уголок скриншота гасим и на старте перемотки — иначе класс зависает (пауза уже была) */
   }
+  if(G.mode==='h'&&((vActive&&vActive._pid)||'')!==G.hPid){ G.mode=null; hideScrub(); }   /* 66: swap посреди перемотки — жест мёртв */
   if(G.mode==='h'){
     if(!isFinite(video.duration))return;
     var w=stage.clientWidth;
@@ -7495,12 +7536,13 @@ function glUp(e){
     }
     endVert();
   }
-  if(G.mode==='h'){
+  if(G.mode==='h'&&((vActive&&vActive._pid)||'')===G.hPid){
     hideScrub();
     video.currentTime=G.scrubTarget;            /* финал — точно */
     try{ msebSeekFast(video,G.scrubTarget) }catch(eS2){}   /* 50: мосту сразу, без дебаунса */
     if(G.wasPlaying)play();
   }
+  else if(G.mode==='h')hideScrub();             /* 66: трек сменился — гасим оверлей, seek не льём */
   if(dt<280&&dist<12)handleTap(e.clientX,e.clientY);
   applyTransform();                                 /* синхронизация обоих элементов после жеста */
   G.mode=null; G.vSide=''; G.wasPlaying=undefined;
@@ -7879,7 +7921,7 @@ async function attachSubsFile(f){
   }
   toast(t('subsSet',{f:f.name}));
 }
-async function autoFindSubs(it){
+async function autoFindSubs(it,myT){
   if(it.kind!=='dir')return;
   var rec=await idbGet('handles',it.dir); if(!rec||!rec.handle)return;
   var base=baseName(it.name).toLowerCase();
@@ -7899,6 +7941,7 @@ async function autoFindSubs(it){
       }
     }catch(e){}
   }
+  if(myT!=null&&myT!==playToken)return;   /* 66: открытие сменилось за время поиска — сабы чужого файла не применяем */
   if(f){ setSubs(await fileTextSmart(f),f.name); it.hasSubs=true; persistItem(it); toast(t('subsFound',{f:f.name})); }
 }
 var subsShown=false;
@@ -8259,6 +8302,7 @@ function applyLibSync(m){
     if(it){
       var curO=(currentIdx>=0&&items[currentIdx])?items[currentIdx]:null;   /* 65: пересчёт по ссылке (del со второй вкладки) */
       items=items.filter(function(x){return x!==it});
+      try{ it._dead=1 }catch(e){}   /* 66: томстон против воскрешения */
       if(hiddenSet[it.id]){ delete hiddenSet[it.id]; saveHidden(); }
       var pt=false;
       playlists.forEach(function(P){ var k=P.ids.indexOf(it.id); if(k>=0){P.ids.splice(k,1);pt=true} });
@@ -8739,7 +8783,7 @@ function mirrorTail(it,my,opts){                   /* 25.9: общий хвос�
       var saved=await idbGet('kv','subs:'+it.id);
       if(my!==playToken)return;
       if(saved&&saved.text){ setSubs(saved.text,saved.name); }
-      else await autoFindSubs(it);
+      else await autoFindSubs(it,my);   /* 66: токен внутрь — сабы прошлого трека не встанут на новый */
     }catch(e){}
   })();
   requestAnimationFrame(function(){ if(my===playToken){ renderLib(); renderQueue(); } });
@@ -9574,6 +9618,12 @@ window.PLENKA={
     opts=opts||{};
     var f=inflight[id]; if(!f)return Promise.resolve(null);
     delete inflight[id];
+    var sz=0; for(var cz=0;cz<f.chunks.length;cz++)sz+=(f.chunks[cz]&&f.chunks[cz].length)||0;
+    if(f.size>0&&sz>0&&sz+65536<f.size){   /* 66: вытесненный/оборванный импорт больше не становится «играбельным» обрезком */
+      NJ('import','импорт прерван: получено '+sz+' из '+f.size+' байт — файл не добавлен');
+      try{ toast(t('errOpenFail'),'err') }catch(eT6){}
+      return Promise.resolve(null);
+    }
     var file=new File(f.chunks,f.name,{type:f.mime});
     return addFiles([file],{play:opts.play!==false});
   }
@@ -10129,7 +10179,9 @@ function initSettingsUI(){
    «bad»-исключений для нативных файлов нет в принципе: метаданные из MediaStore,
    ошибка декодера видна только по тапу — карточка не исчезает.
    ═════════════════════════════════════════════════════════════════ */
-var NATV=false, NATV_PIP=false, NATV_FS=false, NATV_BASE='http://127.0.0.1:8977';
+var NATV=false, NATV_PIP=false, NATV_FS=false,
+    NATV_BASE=(function(){ try{ var o=location.origin||'';   /* 66: порт из факта, не константа — фолбэк порта оболочки (8978+) больше не ломает мост */
+      return /^http:\/\/127\.0\.0\.1(:\d+)?$/.test(o)?o:'http://127.0.0.1:8977' }catch(e){ return 'http://127.0.0.1:8977' } })();
 try{ NATV=!!(window.PlenkaNative&&typeof window.PlenkaNative.scan==='function'); }catch(e){}
 var NATV_TOK=(function(){ try{ var mT=(location.search||'').match(/[?&]tok=([A-Za-z0-9_-]+)/); return mT?mT[1]:'' }catch(eT){ return '' } })();   /* 65: токен локального моста —
   оболочка кладёт его в URL страницы; loopback Android общий для всех процессов, поэтому данные
@@ -10803,9 +10855,12 @@ try{
       });
     }catch(e){ NJ('init','натив-UI: исключение '+e.message); }
     NJ('init','первый синк медиатеки (items='+items.length+' после рестора)');
-    try{ if(NATV&&NATV_TOK){ var nTk=0;   /* 65: миграция после обновления — у записей из IDB нет токена моста */
+    try{ if(NATV&&NATV_TOK){ var nTk=0;   /* 65: миграция после обновления — у записей из IDB нет токена моста;
+        66: устаревший токен (перегенерация srvtoken) тоже заменяется, а не только отсутствие */
       for(var qT=0;qT<items.length;qT++){ var xT=items[qT];
-        if(xT&&xT.kind==='native'&&xT.url&&xT.url.indexOf('tok=')<0){ xT.url=natvTok(xT.url); nTk++; persistItem(xT); } }
+        if(xT&&xT.kind==='native'&&xT.url){
+          var nU=(/[?&]tok=/.test(xT.url))?xT.url.replace(/([?&])tok=[^&]*/, '$1tok='+NATV_TOK):natvTok(xT.url);
+          if(nU!==xT.url){ xT.url=nU; nTk++; persistItem(xT); } } }
       if(nTk)NJ('init','токен моста: обновлено URL у '+nTk+' записей');
     } }catch(eTk){}
     nativeSync(false);
@@ -10815,7 +10870,7 @@ try{
     try{ natvWakePip(); }catch(e){}
     natvWatchdogStart();         /* 2.3: «скан видит файлы, а карточек нет» больше не может висеть молча */
   }
-  else if(/^http:\/\/127\.0\.0\.1:8977/.test(location.origin)){
+  else if(/^http:\/\/127\.0\.0\.1(:\d+)?$/.test(location.origin)){   /* 66: любой порт фолбэка */
     /* 2.2: мост мёртв — не один тост, а живая плашка с кнопкой диагностики:
        причина пустоты обязана быть видимой, «тихая» пустая библиотека запрещена */
     try{
