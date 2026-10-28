@@ -153,8 +153,10 @@ class PlenkaService : Service() {
         }
     }
 
-    /* 3.18: пока играет — продлеваем WakeLock каждые 3 минуты */
-    private val wlRenew = Runnable {
+    /* 3.18: пока играет — продлеваем WakeLock каждые 3 минуты.
+       3.20: тип указан явно — self-referencing вывод типа ломает kotlinc 2.x
+       («type checking has run into a recursive problem») */
+    private val wlRenew: Runnable = Runnable {
         if (!running || !stPlaying) return@Runnable
         try { wl?.let { if (!it.isHeld) it.acquire(WL_RENEW_MS + 60_000L) } } catch (e: Exception) {}
         hd.postDelayed(wlRenew, WL_RENEW_MS)

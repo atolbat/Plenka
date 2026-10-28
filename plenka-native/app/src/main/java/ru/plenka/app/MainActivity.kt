@@ -422,7 +422,7 @@ class MainActivity : Activity() {
             }
             /* 3.19: краш рендерера Chromium (битый 4К, OEM-баг) больше не убивает весь процесс
                (дефолт на API 29+): пересобираем активити — сервер/WebView/токен поднимутся заново */
-            override fun onRenderProcessGone(view: WebView, detail: WebViewClient.RenderProcessGoneDetail): Boolean {
+            override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {   /* 3.20: RenderProcessGoneDetail — класс верхнего уровня android.webkit, НЕ вложенный в WebViewClient (иначе kotlinc: unresolved) */
                 Log.e(TAG, "render gone: crashed=${detail.didCrash()}")
                 try {
                     (view.parent as? android.view.ViewGroup)?.removeView(view)
