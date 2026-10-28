@@ -1107,11 +1107,11 @@ class MainActivity : Activity() {
         try { if (!dir.exists()) dir.mkdirs() } catch (e: Exception) {}
         if (!thumbSweepDone) {
             thumbSweepDone = true
-            try {   // 3.7: разовая зачистка кэша генерации 1 (t_*) — без метки кадра
-                dir.listFiles { x -> x.name.startsWith("t_") }?.forEach { it.delete() }
+            try {   // 3.7/3.21: разовая зачистка старых кэшей (t_* без метки кадра, t2_* — 384px)
+                dir.listFiles { x -> x.name.startsWith("t_") || x.name.startsWith("t2_") }?.forEach { it.delete() }
             } catch (e: Exception) {}
         }
-        val base = "t2_${kind}_${vol ?: "p"}_${id}"
+        val base = "t3_${kind}_${vol ?: "p"}_${id}"   /* 3.21: префикс поднят — старый 384px-кэш не переиспользуется */
         var frameUs = -2L
         var f: File? = null
         try {   // кэш генерации 2: имя несёт метку кадра — заголовок читается без состояния
@@ -1153,7 +1153,8 @@ class MainActivity : Activity() {
     }
 
     /** 3.7: видео — первый кадр (лестница 0/16/50/150мс, фолбэк кейфрейм 0.4с/1с) с поворотом
-        и масштабом ≤384; аудио — встроенный арт. Метка кадра — в имя кэш-файла */
+        и масштабом ≤768 (3.21: было ≤384 — на весь экран мылило); аудио — встроенный арт.
+        Метка кадра — в имя кэш-файла */
     private fun generateThumb(kind: String, id: Long, vol: String?, base: String, rev: String, dir: File): ThumbRes {
         try {
             var rec: PReg? = null
@@ -1212,7 +1213,7 @@ class MainActivity : Activity() {
                        подложка по-прежнему честный чёрный */
                     try {
                         if (Build.VERSION.SDK_INT >= 29) {
-                            val th = contentResolver.loadThumbnail(uri, android.util.Size(384, 384), null)
+                            val th = contentResolver.loadThumbnail(uri, android.util.Size(768, 768), null)   /* 3.21: 384 мылило на весь экран */
                             if (th != null) { bmp0 = th; frameUs = -1L }
                         }
                     } catch (e: Exception) { Log.w(TAG, "thumb sys $kind/$id: ${e.javaClass.simpleName}") }
@@ -1234,7 +1235,7 @@ class MainActivity : Activity() {
                     } catch (e: Exception) {}
                 }
                 var b2: Bitmap = bmp
-                val maxSide = 384
+                val maxSide = 768   /* 3.21: было 384 — карточке хватало, но /t/ служит и fullscreen-заглушкой (fframe нет у гигантов) */
                 if (bmp.width > maxSide || bmp.height > maxSide) {
                     val sc = maxSide.toFloat() / maxOf(bmp.width, bmp.height)
                     try {
