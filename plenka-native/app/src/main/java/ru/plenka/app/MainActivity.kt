@@ -1102,7 +1102,7 @@ class MainActivity : Activity() {
 
     @Volatile private var thumbSweepDone = false
 
-    private fun thumbBytes(kind: String, id: Long, vol: String?, rev: String): ThumbRes {
+    private fun thumbBytes(kind: String, id: Long, vol: String?, rev: String, px: Int): ThumbRes {
         val dir = File(cacheDir, "thumbs")
         try { if (!dir.exists()) dir.mkdirs() } catch (e: Exception) {}
         if (!thumbSweepDone) {
@@ -1139,7 +1139,7 @@ class MainActivity : Activity() {
             thumbDead.remove(key)                    /* TTL истёк — генерации дают ещё шанс */
         }
         val fut: Future<ThumbRes> = thumbInflight[key]?.takeIf { !it.isDone } as? Future<ThumbRes>
-            ?: thumbPool.submit<ThumbRes> { generateThumb(kind, id, vol, base, rev, dir) }
+            ?: thumbPool.submit<ThumbRes> { generateThumb(kind, id, vol, base, rev, dir, px) }
                 .also { thumbInflight[key] = it }
         return try {
             val b = fut.get(25, TimeUnit.SECONDS)
@@ -1153,9 +1153,10 @@ class MainActivity : Activity() {
     }
 
     /** 3.7: видео — первый кадр (лестница 0/16/50/150мс, фолбэк кейфрейм 0.4с/1с) с поворотом
-        и масштабом ≤768 (3.21: было ≤384 — на весь экран мылило); аудио — встроенный арт.
+        и масштабом ≤px (3.22: запрос страницы — 320 карточки / 1920 fullscreen-заглушка,
+        потолок 768 мылил заглушку гигантов без fframe); аудио — встроенный арт.
         Метка кадра — в имя кэш-файла */
-    private fun generateThumb(kind: String, id: Long, vol: String?, base: String, rev: String, dir: File): ThumbRes {
+    private fun generateThumb(kind: String, id: Long, vol: String?, base: String, rev: String, dir: File, px: Int): ThumbRes {
         try {
             var rec: PReg? = null
             val uri: Uri = when (kind) {
@@ -1213,7 +1214,7 @@ class MainActivity : Activity() {
                        подложка по-прежнему честный чёрный */
                     try {
                         if (Build.VERSION.SDK_INT >= 29) {
-                            val th = contentResolver.loadThumbnail(uri, android.util.Size(768, 768), null)   /* 3.21: 384 мылило на весь экран */
+                            val th = contentResolver.loadThumbnail(uri, android.util.Size(1920, 1920), null)   /* 3.22: было 768 — fullscreen-заглушка мылилась */
                             if (th != null) { bmp0 = th; frameUs = -1L }
                         }
                     } catch (e: Exception) { Log.w(TAG, "thumb sys $kind/$id: ${e.javaClass.simpleName}") }
@@ -1235,7 +1236,7 @@ class MainActivity : Activity() {
                     } catch (e: Exception) {}
                 }
                 var b2: Bitmap = bmp
-                val maxSide = 768   /* 3.21: было 384 — карточке хватало, но /t/ служит и fullscreen-заглушкой (fframe нет у гигантов) */
+                val maxSide = px   /* 3.22: размер запроса: карточки 320, fullscreen-заглушка 1920 (768 мылил) */
                 if (bmp.width > maxSide || bmp.height > maxSide) {
                     val sc = maxSide.toFloat() / maxOf(bmp.width, bmp.height)
                     try {
@@ -1248,7 +1249,7 @@ class MainActivity : Activity() {
                     } catch (e: Exception) {}
                 }
                 val bos = java.io.ByteArrayOutputStream()
-                b2.compress(Bitmap.CompressFormat.JPEG, 80, bos)
+                b2.compress(Bitmap.CompressFormat.JPEG, 85, bos)
                 val bytes = bos.toByteArray()
                 val w2 = b2.width; val h2 = b2.height
                 try { b2.recycle() } catch (e: Exception) {}
@@ -1965,7 +1966,9 @@ class MainActivity : Activity() {
             if (id < 0) { writeSimple(out, 404, "image/jpeg", "bad id"); return }
             val vol = qParam(req.rawPath, "vol")
             val rev = qParam(req.rawPath, "r") ?: "0"
-            val etag = "th-$kind-${vol ?: "p"}-$id-$rev"
+            val px = (qParam(req.rawPath, "px")?.toIntOrNull() ?: 320).coerceIn(96, 1920)   /* 3.22: размер запроса — карточки 320, fullscreen-заглушка 1920 */
+            val rev2 = "$rev-$px"                          /* 3.22: px в ключе кэша — 320 и 1920 не путаются */
+            val etag = "th-$kind-${vol ?: "p"}-$id-$rev2"
             val t0 = System.currentTimeMillis()
             val inm = req.headers["if-none-match"]
             if (inm != null && inm.contains(etag)) {
@@ -1977,7 +1980,7 @@ class MainActivity : Activity() {
                 srvRec("t /$kind/$id → 304 (кэш) ${System.currentTimeMillis() - t0}мс")
                 return
             }
-            val res = thumbBytes(kind, id, vol, rev)
+            val res = thumbBytes(kind, id, vol, rev2, px)
             val bytes = res.bytes
             if (bytes == null) {
                 srvRec("t /$kind/$id → 404 (нет кадра/арта) ${System.currentTimeMillis() - t0}мс")
