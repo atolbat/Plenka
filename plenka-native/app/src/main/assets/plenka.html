@@ -340,6 +340,7 @@ input::placeholder{color:var(--dim)}
    таймером — видео само перекрывает её первым кадром. Всё, что внизу (старый элемент),
    физически не может проступить: ни в переходе, ни в леттербоксе, ни в полях PiP-зеркала */
 #vblank{position:absolute;inset:0;z-index:2;pointer-events:none;background:#000 center/contain no-repeat}
+#devLogPre{font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;max-height:230px;overflow:auto;background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.08);padding:8px 10px;border-radius:8px;white-space:pre-wrap;word-break:break-word;margin:8px 0 4px;color:#cfd6cf}
 #video.smooth,#videoB.smooth,#audioArt.smooth{transition:transform .28s cubic-bezier(.2,.8,.2,1)}
 /* постер = ambient blur-up (как YouTube/Google Фото): мыло вместо шакального пискеля;
    низкое разрешение источника не видно — блёр скрывает пиксели, кадр выглядит намеренно */
@@ -721,7 +722,7 @@ body.pip #gestureLayer{touch-action:manipulation}
    Отдельный скрипт ДО всего приложения: только ES5, инлайн-стили, ноль зависимостей.
    Живёт, даже если главный скрипт мёртв: ловит его ошибки и уводит их в logcat
    натива, журнал «куда нажали, что получили» — туда же. Кнопка «ДИАГ» и экран
-   отчёта убраны в 64 (репорт юзера); страница v69 / оболочка 3.22. */
+   отчёта убраны в 64 (репорт юзера); страница v70 / оболочка 3.23. */
 (function(){
 var D=window.__plenkaDiag={errs:[],marks:{},journal:[]};
 var T0=Date.now();
@@ -742,6 +743,7 @@ window.__plenkaJ=function(tag,msg){
     var line=clk+' +'+((rel<10)?rel.toFixed(2):((rel<100)?rel.toFixed(1):Math.round(rel)))+'s '+tag+': '+msg;
     if(D.journal.length>=JMAX)D.journal.shift();
     D.journal.push(line);
+    try{ if(window.__plenkaDevLog&&window.__plenkaDevLog.add)window.__plenkaDevLog.add(tag,msg) }catch(e2){}   /* 70: полный журнал — в дев-кольцо */
     if(NATIVE&&window.PlenkaNative&&window.PlenkaNative.log){
       try{ window.PlenkaNative.log('J '+line) }catch(e){}
     }
@@ -1189,6 +1191,17 @@ window.addEventListener('unhandledrejection',function(e){
         <div class="seg" data-seg="pinGrace"><button data-v="0" data-i="pinG0">каждый раз</button><button data-v="5" data-i="pinG5">5 мин</button><button data-v="15" data-i="pinG15">15 мин</button><button data-v="60" data-i="pinG60">1 час</button><button data-v="s" data-i="pinGS">всю сессию</button></div>
       </div>
       <div class="pill" data-i="pinHint">вход в скрытый список (жест на логотипе) попросит пин-код; отпечаток — если устройство умеет</div>
+    </div>
+    <div class="dw-sec" id="devSec"><h4>Разработчику</h4>
+      <div class="row"><label>дев-журнал (кадры · обложки · показ)</label><button class="sw" data-sw="dev" role="switch" aria-checked="false"></button></div>
+      <div id="devLogWrap" hidden>
+        <div class="row" style="gap:8px">
+          <button class="btn sm" id="btnDevCopy">скопировать весь лог</button>
+          <button class="btn sm" id="btnDevClear">очистить</button>
+        </div>
+        <pre id="devLogPre" tabindex="0"></pre>
+      </div>
+      <div class="pill">в журнал пишутся: открытия, обложки и их штампы доверия, подложка, маски, предъявления кадров и их проверки по содержимому. Копирование кладёт в буфер весь буфер лога + журнал ДИАГ</div>
     </div>
     <div class="dw-sec"><h4 data-i="hKeys">Клавиши</h4>
       <div class="keys">
@@ -1828,6 +1841,7 @@ var DEF={ autoplayNext:true, loop:'off', shuffle:false, shuffleStrip:false, step
   fit:'contain', interp:'smooth', grain:0, bright:1, contrast:1, sat:1, zoom:1,
   subsOn:true, subsSize:1, subsBottom:16, subsBg:.4, subsDelay:0, subsColor:'white',
   persist:true, setv:2, sort:'new', toasts:'err', lang:'auto',
+  dev:false,   /* 70: дев-журнал — сбор всегда, панель/копирование по переключателю */
   resume:false, autohide:'video', timeLeft:false, thinbar:true, dateSep:true,
   pauseUi:'corner', pinLock:false, pinGrace:'0', _pohMig:0, /* _pohMig: разовая миграция старого pauseOnHidden:true; pinGrace: 0|5|15|60|с — вход без пина */
   filter:{type:'all',len:'all',ext:'all'} };
@@ -3714,7 +3728,7 @@ async function doProbe(it){
         var fw=v.videoWidth, fh=v.videoHeight, FSC=1920, fsc=Math.min(1,FSC/Math.max(fw,fh));   /* 68: 1920 — портрет 4К влезает в 1080p-экран 1:1, заглушка не мылится */
         var fc=document.createElement('canvas'); fc.width=Math.max(2,Math.round(fw*fsc)); fc.height=Math.max(2,Math.round(fh*fsc));
         fc.getContext('2d').drawImage(v,0,0,fc.width,fc.height);
-        it.fframe=fc.toDataURL('image/jpeg',.85); it.fframePos=0; it._pd=true; thumbRev++;
+        it.fframe=fc.toDataURL('image/jpeg',.85); it.fframePos=0; it.fframeV=70; it._pd=true; thumbRev++;   /* 70: проба — выделенный свежий элемент (чужой буфер невозможен), штамп доверия */
         if(f.size>LEAN_TH&&!it.thumb){              /* 33: гиганту превью карточки — с ЭТОГО ЖЕ кадра: один seek вместо двух */
           var lc=document.createElement('canvas'); lc.width=320; lc.height=180;
           var lx=lc.getContext('2d'); lx.fillStyle='#1d1810'; lx.fillRect(0,0,320,180);
@@ -3833,7 +3847,7 @@ function persistItem(it){
   if(it.kind==='x')return;      /* 67: внешнее открытие живёт только сессию — в IDB не пишем */
   if(!hadLib){ hadLib=true; try{localStorage.plenkaHad='1'}catch(e){} }   /* для скелетона на следующем старте */
   var meta={id:it.id,name:it.name,size:it.size,mtime:it.mtime,kind:it.kind,dir:it.dir,url:it.url,
-    audio:it.audio,duration:it.duration,position:it.position,addedAt:it.addedAt,fframePos:it.fframePos||0,views:it.views||0,
+    audio:it.audio,duration:it.duration,position:it.position,addedAt:it.addedAt,fframePos:it.fframePos||0,fframeV:it.fframeV||0,views:it.views||0,
     w:it.w||0,h:it.h||0,lastAt:it.lastAt||0,meta:it.meta||undefined,covTried:it.covTried?1:undefined,   /* 39.1 */
     picked:it.picked?1:undefined,   /* native 2.1: ручной выбор — метка источника на карточке */
     fx:(it.fx&&typeof it.fx==='object')?it.fx:undefined, snd:(it.snd&&typeof it.snd==='object')?it.snd:undefined,   /* 37.4: профиль звука/картинки файла */
@@ -3841,7 +3855,7 @@ function persistItem(it){
   idbPut('items',it.id,meta);                     /* лёгкая запись: savePos во время игры больше не тащит
                                                      сотни КБ dataURL (структурный клон + I/O = микрофризы) */
   if(it._pd){ it._pd=false;                       /* превью менялись (probe/metaAsync/fframe/snapPoster) */
-    idbPut('prev',it.id,{id:it.id,thumb:it.thumb,fframe:it.fframe,fthumb:it.fthumb,mcover:it.mcover}); }
+    idbPut('prev',it.id,{id:it.id,thumb:it.thumb,fframe:it.fframe,fframeV:it.fframeV||0,fthumb:it.fthumb,mcover:it.mcover}); }
 }
 async function removeItem(it){
   var curO=(currentIdx>=0&&items[currentIdx])?items[currentIdx]:null;   /* 65: пересчёт по ссылке */
@@ -4152,6 +4166,13 @@ async function loadStandby1(it,my){
       return ok1;
     }
     sb._lgen=(sb._lgen||0)+1; var gen=sb._lgen;          /* поколение загрузки: гонки preheat/клик/prefetch */
+    /* 70: снимок того, что на композиторе ПЕРЕД перезарядкой — эталон «чужого».
+       После смены src буфер SurfaceTexture на части сборок ещё показывает ЭТОТ
+       кадр (re-present): теперь он опознаётся сравнением содержимого, а не
+       эвристиками по времени. null — элемент пуст (первая загрузка), проверка просто не сработает */
+    sb._preFrame=null;
+    try{ if(sb._pid&&sb._pid!==it.id&&sb.videoWidth&&sb.readyState>=2){ sb._preFrame=capFrame(sb);
+      dlog('кадр','перезарядка элемента: было '+(sb._preFrame?(sb._preFrame.vw+'×'+sb._preFrame.vh+' (pid '+String(sb._pid).slice(0,8)+')'):'снимок не удался')+', цель '+baseName(it.name)); } }catch(e0){}
     sb._pid=it.id; sb._seekDone=false; sb._f=f||null;    /* _f: размер цели — для таймаута метаданных */
     try{ sb.pause(); sb.muted=true; }catch(e){}
     if(it.kind==='native'&&(it.size||0)>2e8)sbTap(sb);   /* 42: события элемента гиганта — в журнал (ДИАГ) */
@@ -4199,6 +4220,7 @@ async function loadStandby1(it,my){
       if(gen!==sb._lgen)return false;
     }
     var ok2=await sbSeek(sb,it,my,gen);
+    dlog('load',baseName(it.name)+': элемент готов — rs='+sb.readyState+' dur='+(isFinite(sb.duration)?Math.round(sb.duration)+'с':'∞')+' '+(sb.videoWidth?sb.videoWidth+'×'+sb.videoHeight:'без видео')+(sb._mseb?' · мост MSE':' · прямой src')+' pos='+(sb.currentTime||0).toFixed(2)+' seekDone='+sb._seekDone);
     if(!ok2&&lsWhy==='')lsWhy='race';                    /* sbSeek отказывает только по гонкам/токену */
     if(ok2&&my===playToken)warmStandby(sb);
     return ok2;
@@ -4281,8 +4303,99 @@ function frameProof(el){                    /* кадр ИМЕННО текущ�
       два предъявления мог дать застывший буфер прошлого — верим только росту mediaTime/живому декоду */
   }catch(e){ return el.readyState>=2 }      /* API нет — доверяем декодеру */
 }
+/* ═══ 70: проверка кадра ПО СОДЕРЖИМОМУ ═══
+   Репорты 68/69 («кадр совсем другого видео», «под видео виден чужой кадр с другим
+   аспектом») показали: гварды по mediaTime/счётчикам — костыль вокруг того, что
+   drawImage и композитор читают ОДИН И ТОТ ЖЕ буфер SurfaceTexture, а после
+   перезарядки элемента там может лежать кадр прошлой загрузки. Раз буфер общий —
+   снимаем с него контрольный мини-снимок и СРАВНИВАЕМ ПО ПИКСЕЛЯМ:
+   • снимок ≈ снимку ДО перезарядки (_preFrame) → на композиторе всё ещё прошлый ролик;
+   • снимок ≈ эталону цели (проверенный fframe) → это действительно кадр этого видео.
+   Пороги: разница 0..255 по среднему |Δ| яркости. Совпадение <1.5 — «тот же кадр»
+   (артефактов нет), совпадение с эталоном ≤24 — «кадр цели» (JPEG-шум 1920→64px +
+   микродвижок за 40мс укладываются в ~10-20), чужой ролик обычно >40. */
+var CAPW=64, LASTREF=null;                  /* LASTREF: проверенный снимок snapPoster этой загрузки — эталон для показа */
+function capFrame(el){
+  try{
+    if(!el||!el.videoWidth)return null;
+    var w=CAPW,h=Math.max(2,Math.round(CAPW*el.videoHeight/el.videoWidth));
+    var c=document.createElement('canvas'); c.width=w; c.height=h;
+    var x=c.getContext('2d'); x.drawImage(el,0,0,w,h);
+    var d=x.getImageData(0,0,w,h).data,a=new Uint8Array(w*h),px=0;
+    for(var i=0;i<a.length;i++){ a[i]=(d[px]*38+d[px+1]*53+d[px+2]*10)>>6; px+=4; }   /* luma .30/.42/.08 → 0..255 */
+    return {a:a,w:w,h:h,vw:el.videoWidth,vh:el.videoHeight};
+  }catch(e){ return null }                  /* tainted canvas (внешние url-потоки) — проверки честно деградируют */
+}
+function frameDiff(p,q){                    /* средняя |Δ| яркости 0..255; нет пары/разные размеры — -1 */
+  try{
+    if(!p||!q||!p.a||!q.a||p.a.length!==q.a.length)return -1;
+    var s=0,d;
+    for(var i=0;i<p.a.length;i++){ d=p.a[i]-q.a[i]; s+=d<0?-d:d; }
+    return Math.round((s/p.a.length)*10)/10;
+  }catch(e){ return -1 }
+}
+var REFCACHE={};
+function refCapFor(it,pos){                 /* эталон первого кадра цели из проверенного fframe (fframeV=70),
+   снятого с ЭТОГО файла (probe/fframeGrab/snapPoster) — отмасштабированный до контрольного размера */
+  try{
+    if(!it||it.audio||!it.fframe||((''+it.fframe).indexOf('data:image/')!==0))return Promise.resolve(null);
+    if((it.fframeV||0)<70)return Promise.resolve(null);         /* без штампа доверия эталоном не бывает */
+    if(pos!=null&&pos>3){ if(Math.abs((it.fframePos||0)-pos)>3)return Promise.resolve(null); }
+    else{ if((it.fframePos||0)>3)return Promise.resolve(null); }/* кадр resume-позиции — не эталон старта с нуля */
+    var sig=it.id+'|'+it.fframe.length+'|'+Math.round(pos||0);
+    var c0=REFCACHE[it.id];
+    if(c0&&c0.sig===sig)return c0.pr;
+    var pr=new Promise(function(res){
+      var im=new Image();
+      im.onload=function(){
+        try{
+          var iw=im.naturalWidth||0,ih=im.naturalHeight||0; if(!iw||!ih){ res(null); return; }
+          var w=CAPW,h=Math.max(2,Math.round(CAPW*ih/iw));
+          var cv=document.createElement('canvas'); cv.width=w; cv.height=h;
+          var x=cv.getContext('2d'); x.drawImage(im,0,0,w,h);
+          var d=x.getImageData(0,0,w,h).data,a=new Uint8Array(w*h),px=0;
+          for(var i=0;i<a.length;i++){ a[i]=(d[px]*38+d[px+1]*53+d[px+2]*10)>>6; px+=4; }
+          res({a:a,w:w,h:h});
+        }catch(e){ res(null) }
+      };
+      im.onerror=function(){ res(null) };
+      im.src=it.fframe;
+    });
+    var ks=Object.keys(REFCACHE); if(ks.length>24){ for(var kq=0;kq<ks.length-12;kq++)delete REFCACHE[ks[kq]]; }
+    REFCACHE[it.id]={sig:sig,pr:pr};
+    return pr;
+  }catch(e){ return Promise.resolve(null) }
+}
+/* ═══ 70: дев-журнал ═══ полный журнал жизненного цикла кадров/обложек (кольцо 1600):
+   NJ-строки (ДИАГ) + dlog-строки. Всегда копится, виден и копируется в настройках
+   → «Разработчику». window.__plenkaDevLog доступен и из консоли */
+var DEVLOG=window.__plenkaDevLog={lines:[],t0:Date.now(),add:function(tag,msg){
+  try{
+    var d=new Date(),rel=(Date.now()-this.t0)/1000;
+    var clk=((d.getHours()<10)?'0':'')+d.getHours()+':'+((d.getMinutes()<10)?'0':'')+d.getMinutes()+':'+((d.getSeconds()<10)?'0':'')+d.getSeconds();
+    var line=clk+' +'+((rel<10)?rel.toFixed(2):((rel<100)?rel.toFixed(1):Math.round(rel)))+'s '+tag+': '+msg;
+    if(this.lines.length>=1600)this.lines.splice(0,200);
+    this.lines.push(line);
+    return line;
+  }catch(e){ return '' }
+}};
+function dlog(tag,msg){ try{ DEVLOG.add(tag,msg) }catch(e){} }
+function devDump(){                          /* текст для кнопки «копировать весь лог» */
+  try{
+    var s='ПЛЁНКА v70 / оболочка 3.23 · '+(new Date().toISOString())+' · UA='+navigator.userAgent+'\n';
+    s+='— дев-журнал ('+DEVLOG.lines.length+' строк) —\n'+DEVLOG.lines.join('\n')+'\n';
+    try{ var D=window.__plenkaDiag;
+      if(D){ s+='\n— журнал ДИАГ ('+D.journal.length+') —\n'+D.journal.join('\n');
+        var mk=Object.keys(D.marks||{});
+        if(mk.length)s+='\n— метки —\n'+mk.map(function(k){return k+'='+(Math.round(D.marks[k]*10)/10)+'с'}).join('\n'); } }catch(e0){}
+    try{ var pj=window.__plenkaPerf&&window.__plenkaPerf.log;
+      if(pj&&pj.length)s+='\n— perf —\n'+pj.map(function(r){return JSON.stringify(r)}).join('\n'); }catch(e1){}
+    return s;
+  }catch(e){ return '' }
+}
 function swapRoles(){
   var old=vActive, sb=vStandby;
+  dlog('свап','активный: '+((old&&old._pid)?String(old._pid).slice(0,8):'?')+' → '+((sb&&sb._pid)?String(sb._pid).slice(0,8):'?')+' (старый rs='+((old&&old.readyState)||'-')+', новый rs='+((sb&&sb.readyState)||'-')+')');
   try{ clearTimeout(seekStuckT); clearTimeout(seekSpinT) }catch(e){}   /* 65: seek-таймеры уходящего элемента
       не должны сработать уже по новому video и дёрнуть лишний reloadActiveTo */
   lastBufs='\u0000';                            /* кэш полос буфера больше не про тот элемент */
@@ -4329,7 +4442,7 @@ function swapRoles(){
   var mySwTok=playToken;                          /* 67: токен свапа — очистку подложки делает только свой переход */
   var killOld=function(){ try{ if(old!==vActive){ old.style.visibility='hidden';
     if(mySwTok===playToken&&vblankEl)setTimeout(function(){
-      if(mySwTok===playToken&&vActive===sb&&vblankEl)vblankEl.style.backgroundImage=''; },500); } }catch(e){} };   /* 67: VL-2 → 68:
+      if(mySwTok===playToken&&vActive===sb&&vblankEl){ vblankEl.style.backgroundImage=''; dlog('подложка','кадр подложки погашен (500мс после показа) — дальше чистый чёрный'); } },500); } }catch(e){} };   /* 67: VL-2 → 68:
     кадр подложки гасится через 500мс после показанного кадра: если доказательство оказалось
     ложным (устаревший буфер), прозрачный новый элемент ещё видит под собой вписанный первый
     кадр ЦЕЛИ — тот же пик-в-пик, мигания нет; зум/пан/перезарядка в эти полсекунды не
@@ -4340,7 +4453,7 @@ function swapRoles(){
      кадра (rVFC); старый замерший кадр остаётся маской. */
   if(!curIsAudio()&&old.readyState>0){       /* 27.2: hold ВСЕГДА (постер — не условие: под ним
     элемент тоже мог показать прозрачность/устаревший кадр) */
-    var revealed=false,paintDone=false,softN=0;
+    var revealed=false,paintDone=false,softN=0,revStarted=false;
     var painted=function(){ return frameProof(sb) };   /* 31.3: эпоха — голый счётчик обманывался
       устаревшим значением прошлого ролика (окно до сброса статистики), маски падали раньше кадра */
     var finish=function(){ if(paintDone)return; paintDone=true;
@@ -4356,19 +4469,60 @@ function swapRoles(){
                                                 error больше не держит маски (и интервал) вечно */
       setTimeout(softFinish,150);            /* кадр ещё не показан — маски держим, проверим снова */
     };
-    var reveal=function(){                    /* кадр гарантированно декодирован (readyState≥2) */
-      if(revealed||paintDone)return; revealed=true;
-      try{ if(sb===vActive){ sb.style.visibility=''; sb._pvShownAt=Date.now() } }catch(e){}
-      /* маски (старый кадр, freeze, постер) прячем только ПОСЛЕ первого показанного
-         кадра нового — иначе под ними успевает блеснуть пустой элемент */
-      try{ (function pvFin(){ sb.requestVideoFrameCallback(function(md){   /* 68: медиа-гвард —
-          устаревший буфер прошлой загрузки маски не снимает, ждём свой кадр дальше */
+    var reveal=function(){                    /* 70: показ ПОДЛИННОГО кадра. readyState≥2 говорит «данные готовы»,
+      но композитор в окне re-present ещё показывает буфер прошлой загрузки — раньше элемент
+      открывался с чужим кадром до живого декода. Теперь снимаем контрольный снимок и
+      сравниваем ПО СОДЕРЖИМОМУ с эталоном цели (проверенный снимок snapPoster / fframeV=70):
+      совпал — показываем; не совпал (или другой размер = чужой ролик) — держим скрытым
+      (маски прикрывают), повторяем до 2.2с, дальше страховочный показ. Нет эталона —
+      прежняя семантика (маски снимает finish по pvOk-доказательству) */
+      if(revStarted||paintDone)return; revStarted=true;   /* revStarted ≠ revealed: revealed — факт видимости */
+      var refP=null,itR=null;
+      try{
+        if(LASTREF&&LASTREF.pid===sb._pid&&LASTREF.cap)refP=Promise.resolve(LASTREF.cap);
+        else{
+          for(var qR2=0;qR2<items.length;qR2++)if(items[qR2]&&items[qR2].id===sb._pid){itR=items[qR2];break}
+          if(itR){ var rp0=(S.resume&&(itR.position||0)>10&&itR.duration&&(itR.position||0)<itR.duration-20)?itR.position:0;
+            refP=refCapFor(itR,rp0); }
+        }
+      }catch(eR0){}
+      if(!refP)refP=Promise.resolve(null);
+      var revealT0=Date.now();
+      var doReveal=function(why){
+        if(revealed||paintDone)return; revealed=true;
+        try{ if(sb===vActive){ sb.style.visibility=''; sb._pvShownAt=Date.now() } }catch(e){}
+        dlog('кадр','ПОКАЗ элемента: '+why+' — '+(sb._pid?String(sb._pid).slice(0,8):'?'));
+        /* маски (старый кадр, freeze, постер) прячем только ПОСЛЕ первого показанного
+           кадра нового — иначе под ними успевает блеснуть пустой элемент */
+        try{ (function pvFin(){ sb.requestVideoFrameCallback(function(md){   /* 68: медиа-гвард —
+            устаревший буфер прошлой загрузки маски не снимает, ждём свой кадр дальше */
+          if(sb!==vActive)return;
+          if(pvOk(sb,md)){ finish(); return }   /* 69: размер+рост mediaTime — см. pvOk */
+          try{ sb._pvLogN=(sb._pvLogN||0)+1; if(sb._pvLogN<=3)dlog('кадр','предъявление отклонено (ж'+((md&&md.mediaTime)||'?')+') — маски держу') }catch(eL){}
+          pvFin() }) })() }catch(e){}
+        requestAnimationFrame(function(){ requestAnimationFrame(softFinish) });   /* 27g/28.1:
+          rAF — проверка, а не финиш: вердикт выносит painted() */
+        setTimeout(softFinish,1200);
+      };
+      (function tryShow(n){
+        if(revealed||paintDone)return;
         if(sb!==vActive)return;
-        if(pvOk(sb,md)){ finish(); return }   /* 69: размер+рост mediaTime — см. pvOk */
-        pvFin() }) })() }catch(e){}
-      requestAnimationFrame(function(){ requestAnimationFrame(softFinish) });   /* 27g/28.1:
-        rAF — проверка, а не финиш: вердикт выносит painted() */
-      setTimeout(softFinish,1200);
+        if(sb.error){ doReveal('ошибка элемента'); return; }
+        refP.then(function(ref){
+          if(revealed||paintDone||sb!==vActive)return;
+          var cap=(sb.readyState>=2&&!sb.seeking)?capFrame(sb):null;
+          if(!ref){ doReveal('эталона нет, readyState='+sb.readyState); return; }   /* честных масок достаточно */
+          if(!cap){
+            if(++n>25||Date.now()-revealT0>2200){ doReveal('кадр не читается '+Math.round(Date.now()-revealT0)+'мс — страховочный показ'); return; }
+            setTimeout(function(){ tryShow(n) },120); return;
+          }
+          var d=frameDiff(cap,ref);
+          if(d>=0&&d<=24){ doReveal('кадр цели доказан (diff '+d+')'); return; }   /* содержимое совпало с эталоном */
+          if(++n>25||Date.now()-revealT0>2200){ doReveal('эталон не совпал за '+Math.round(Date.now()-revealT0)+'мс ('+(d<0?'другой размер':'diff '+d)+') — страховочный показ'); return; }
+          dlog('кадр','на композиторе кадр ЧУЖОЙ ('+(d<0?'другой размер':'diff '+d)+') — элемент скрыт, маски прикрывают');
+          setTimeout(function(){ tryShow(n) },120);
+        },function(){ doReveal('эталон недоступен'); });
+      })(0);
     };
     var waitFrame=function(){
       if(revealed||paintDone)return;
@@ -4426,6 +4580,7 @@ async function prefetchNext(){
         разрешения», особенно в момент анимаций UI; откроется холодным — moov в начале */
     if(standbyReadyFor(it))return;              /* уже готов */
     if(vStandby&&vStandby._loading)return;      /* занят загрузкой текущей цели */
+    dlog('prefetch','грею соседа в запасной элемент — '+baseName(it.name));
     await loadStandby(it,playToken);
   }catch(e){}
 }
@@ -4878,13 +5033,18 @@ function trueAspectPoster(it,pos){/* 67: источник маски ТОЛЬК�
   сохраняет fframe кадром RESUME-позиции (3:42), а открытие с нуля показывало его как первый.
   Открытие не с нуля принимает ТОЛЬКО fframe этой позиции (серверный /t/ — всегда ПЕРВЫЙ кадр,
   для resume он «не тот» — честный чёрный, snapPoster докрутит); /t/ для заглушки — px=1920:
-  карточный 320px на весь экран мылил («обложка низкого качества») */
+  карточный 320px на весь экран мылил («обложка низкого качества»)
+  70: открытие с нуля — только fframe со ШТАМПОМ ДОВЕРИЯ (fframeV=70, снят проверенным путём)
+  и ДЕЙСТВИТЕЛЬНО первого кадра (fframePos≤3). Раньше ветка принимала ЛЮБОЙ fframe:
+  в неё попадали кадры resume-позиции («с середины видео») и загрязнения окном
+  re-present («совсем другое видео»). Нет доказанного первого — честный чёрный,
+  snapPoster/fframeGrab снимут настоящий */
   if(!it)return null;
   if(pos!=null&&pos>3){
-    if(it.fframe&&Math.abs((it.fframePos||0)-pos)<=3)return it.fframe;
+    if(it.fframe&&(it.fframeV||0)>=70&&Math.abs((it.fframePos||0)-pos)<=3)return it.fframe;
     return null;
   }
-  if(it.fframe)return it.fframe;
+  if(it.fframe&&(it.fframeV||0)>=70&&(it.fframePos||0)<=3)return it.fframe;
   var th=(''+(it.thumb||''));
   if(th.indexOf('/t/')<0)return null;
   return th.replace(/([?&])px=\d+/,'$1px=1920');
@@ -4924,12 +5084,15 @@ function setVblank(it){    /* 30.1: подложка на цель — перв�
       устаревший posterFirstMs-колбэк прежней цели больше не может нарисовать чужой кадр
       поверх играющего (ветки null/data: раньше не бампались — колбэк проходил гвард) */
     var src=(it&&!it.audio)?trueAspectPoster(it,openPosOf(it)):null;          /* 67: VL-1; 69: только кадр стартовой позиции */
+    dlog('подложка','setVblank '+(it?baseName(it.name):'null')+' → '+(src?((''+src).indexOf('data:')===0?('fframe '+(Math.round(src.length/1365))+'КБ (fframePos='+(it.fframePos||0)+',V='+(it.fframeV||0)+')'):'серверный /t/ (1920)'):'чёрный'));
     if(!src){ vblankEl.style.backgroundImage=''; return }
     if(src.indexOf('data:')===0){ vblankEl.style.backgroundImage='url("'+src+'")'; return }
     vblankEl.style.backgroundImage='';
     posterFirstMs(src,function(ms){
       if(my!==vblankEl._tok)return;                    /* цель уже сменилась — чужой кадр не подставляем */
-      if(ms<=POSTER_FIRST_MS)vblankEl.style.backgroundImage='url("'+src+'")';
+      if(ms<=POSTER_FIRST_MS){ vblankEl.style.backgroundImage='url("'+src+'")';
+        dlog('подложка','setVblank: /t/ подтвердился как первый ('+ms+'мс) — рисую'); }
+      else dlog('подложка','setVblank: /t/ НЕ первый кадр ('+ms+'мс>'+POSTER_FIRST_MS+') — остаюсь чёрным');
     })
   }catch(e){}
 }
@@ -4960,6 +5123,7 @@ function showFreeze(fromEl){          /* 27.2: маска «стоп-кадр» 
     c.getContext('2d').drawImage(fromEl,0,0,c.width,c.height);
     freezeEl.style.backgroundImage='url("'+c.toDataURL('image/jpeg',.85)+'")';
     freezeEl.style.display='block';
+    dlog('маска','freeze: стоп-кадр уходящего '+vw+'×'+vh+' (это КАРТИНКА уходящего, не чужая — гасится при показе цели)');
     var stg=$('#stage'); if(stg&&freezeEl.parentNode===stg)stg.appendChild(freezeEl);   /* равный z: позже в DOM — выше */
   }catch(e){ hideFreeze(); }
 }
@@ -4969,12 +5133,14 @@ function hideFreeze(){
 }
 function showPoster(url){
   if(!posterEl)return;
+  dlog('постер',url?('показ ('+((''+url).indexOf('data:')===0?('fframe '+Math.round((''+url).length/1365)+'КБ'):'серверный /t/')+')'):('чёрная маска'+(posterEl.hidden?'':' (замена)')));
   posterEl.style.setProperty('--pi',url?'url("'+url+'")':'none');   /* --pi читают ::before (фон) и ::after (кадр) */
   posterEl.hidden=false; posterEl.classList.remove('off');
   clearTimeout(posterEl._t);
 }
 function hidePoster(instant){
   if(!posterEl||posterEl.hidden)return;
+  dlog('постер','скрыт'+(instant?' мгновенно':' плавно'));
   clearTimeout(posterEl._t);
   if(instant){ posterEl.hidden=true; return; }
   posterEl.classList.add('off');
@@ -5118,19 +5284,55 @@ function snapPoster(it){           /* кадр с запасного элеме�
    до реального кадра ещё до склейки (бесшовный переход при resume), кэш fframe обновляется —
    следующее открытие маскируется точным кадром. Фоновый: sbSeek для видео не ждёт кадр (rs=1 после
    seeked) — догоняем readyState≥2 poll'ом (кап 480мс), склейку не блокируем; ссылку на элемент
-   захватываем — после swap vStandby уже чужой. Не успели до скрытия постера — кэш всё равно согрет */
+   захватываем — после swap vStandby уже чужой. Не успели до скрытия постера — кэш всё равно согрет
+   70: ЗАПИСЬ В КЭШ ТОЛЬКО ПОДЛИННОГО КАДРА. Элемент только что перезаряжен — в окне re-present
+   drawImage снимает буфер ПРОШЛОЙ загрузки; раньше этот снимок писался в it.fframe и ЖИЛ В IDB
+   вечно («кадр совсем другого видео» на постере/подложке). Теперь: снимок сравнивается с
+   до-перезарядным (_preFrame) — совпал с ним = чужой, ждём живой декод (микро-сики раскачивают
+   декодер); записывается только проверенный кадр со штампом fframeV=70 */
   try{
     var sb=vStandby, myTok=playToken;
-    if(!sb||sb._pid!==it.id||sb.error)return;
-    var tries=0;
+    if(!sb||sb._pid!==it.id||sb.error){
+      var spw=sb?('pid '+(sb._pid===it.id?'наш':'чужой')):'нет';
+      dlog('кадр','snapPoster: отмена (элемент '+spw+', err='+(sb&&sb.error?'да':'нет')+') — '+baseName(it.name)); return; }
+    var tries=0, staleN=0, pos0=-1, late=false;
     (function poll(){
       try{
-        if(myTok!==playToken||sb.error||sb._pid!==it.id)return;   /* 66: токен открытия + цель — чужой кадр не пишем в постер/подложку */
-        if(sb===vActive)return;   /* 67: VL-2 (live-тест) — склейка уже произошла и killOld очистил подложку:
-          поздняя докрутка снова закрашивала её кадром позиции на весь сеанс трека; кадр теперь рисует само видео */
+        if(myTok!==playToken||sb.error||sb._pid!==it.id){   /* 66: токен открытия + цель — чужой кадр не пишем в постер/подложку */
+          dlog('кадр','snapPoster: прерван (токен/цель сменились) — '+baseName(it.name)); return; }
+        if(sb===vActive){   /* 67: склейка уже произошла — экран (постер/подложка) трогать запрещено:
+          поздняя докрутка закрашивала подложку кадром позиции на весь сеанс трека.
+          70: КЭШ fframe при этом пишем (проверенный кадр этого же элемента — ценен для
+          следующих открытий), только без покраски; LASTREF тоже не трогаем */
+          if(sb.readyState>=2&&sb.videoWidth){
+            var cL=capFrame(sb),dL=sb._preFrame?frameDiff(cL,sb._preFrame):-2;
+            if(dL>=0&&dL<1.5){ if(++staleN>8){ dlog('кадр','snapPoster(late): застывший буфер — fframe НЕ пишу ('+baseName(it.name)+')'); return; } setTimeout(poll,130); return; }
+            else{
+              var vwL=sb.videoWidth,vhL=sb.videoHeight,FSL=1920,fsl=Math.min(1,FSL/Math.max(vwL,vhL));
+              var cN=document.createElement('canvas'); cN.width=Math.max(2,Math.round(vwL*fsl)); cN.height=Math.max(2,Math.round(vhL*fsl));
+              cN.getContext('2d').drawImage(sb,0,0,cN.width,cN.height);
+              var uL=cN.toDataURL('image/jpeg',.85), pL=sb.currentTime||0;
+              if(!it.fframe||Math.abs((it.fframePos||0)-pL)>3){ it.fframe=uL; it.fframePos=pL; it.fframeV=70; it._pd=true;
+                if(it.kind!=='memory')persistItem(it);
+                dlog('кадр','snapPoster(late): кэш пополнен кадром '+pL.toFixed(2)+'с '+vwL+'×'+vhL+' V=70 (экран не трогаю) — '+baseName(it.name)); }
+            }
+          }
+          else if(++tries<=20){ setTimeout(poll,60); }   /* late-догон: играющий элемент вот-вот выдаст кадр */
+          return;
+        }
         if(sb.readyState<2||!sb.videoWidth){               /* кадр ещё не декодирован — короткий догон */
-          if(++tries>12)return;
+          if(++tries>12){ dlog('кадр','snapPoster: кадр не декодировался за догон — эталона нет ('+baseName(it.name)+')'); return; }
           setTimeout(poll,40); return;
+        }
+        if(pos0<0)pos0=sb.currentTime||0;
+        var cap=capFrame(sb);
+        if(!cap){ dlog('кадр','snapPoster: снимок не удался (tainted?) — эталона нет ('+baseName(it.name)+')'); return; }
+        var dpre=sb._preFrame?frameDiff(cap,sb._preFrame):-2;   /* -2: сравнивать не с чем (первая загрузка элемента) */
+        if(dpre>=0&&dpre<1.5){                             /* 70: композитор всё ещё показывает буфер прошлой загрузки */
+          if(++staleN>8){ dlog('кадр','snapPoster: застывший чужой буфер держится '+staleN+' проверок — fframe НЕ пишу ('+baseName(it.name)+')'); return; }
+          dlog('кадр','snapPoster: на элементе кадр ПРОШЛОЙ загрузки (diff '+dpre+') — жду живой декод '+staleN+'/8 ('+baseName(it.name)+')');
+          try{ sb.currentTime=Math.min(pos0+0.05+0.06*staleN,(sb.duration||1e9)-0.1); }catch(eN){}   /* микро-сик: живой декодер выдаст новый кадр, застывший буфер не сдвинется */
+          setTimeout(poll,130); return;
         }
         var vw=sb.videoWidth,vh=sb.videoHeight;
         var FSC=1920, fsc=Math.min(1,FSC/Math.max(vw,vh));   /* 68: 1920 — постер/подложка в истинном разрешении экрана */
@@ -5142,8 +5344,13 @@ function snapPoster(it){           /* кадр с запасного элеме�
           pending-fetch setVblank: инвалидируем его колбэк, пик-в-пик не перебивается кадром 0:00 */
         if(vblankEl)vblankEl.style.backgroundImage='url("'+url+'")';   /* 30.1: подложка докручивается
           синхронно с постером — снятие постера открывает идентичную картинку (пик-в-пик) */
-        if(!it.fframe||Math.abs((it.fframePos||0)-pos)>3){ it.fframe=url; it.fframePos=pos; it._pd=true;
-          if(it.kind!=='memory')persistItem(it); }
+        var isNew=!it.fframe||Math.abs((it.fframePos||0)-pos)>3;
+        if(isNew){ it.fframe=url; it.fframePos=pos; it.fframeV=70; it._pd=true;   /* 70: штамп доверия —
+          «снят проверенным путём с этого файла после подтверждения живого декода» */
+          if(it.kind!=='memory')persistItem(it);
+          dlog('кадр','snapPoster: ПОДЛИННЫЙ кадр '+pos.toFixed(2)+'с '+vw+'×'+vh+' → fframe '+(Math.round(url.length/1365))+'КБ (до-перезарядный diff '+dpre+') — '+baseName(it.name)); }
+        else dlog('кадр','snapPoster: кадр позиции совпадает с кэшем — не перезаписываю ('+baseName(it.name)+')');
+        LASTREF={pid:it.id,cap:cap};                    /* 70: эталон для показа в swapRoles — снят с этого элемента после проверки */
       }catch(e){}
     })();
   }catch(e){}
@@ -5185,6 +5392,11 @@ function ffReviveSweep(){
       var it=items[i];
       if(!it||it.audio||!it.fframe||(''+it.fframe).indexOf('data:image/')!==0||it._ffRev)continue;
       it._ffRev=1;                              /* один раз за сессию — регенерация не зациклится */
+      /* 70: обложки БЕЗ ШТАМПА ДОВЕРИЯ (fframeV<70) — под нож безусловно: они сняты
+         кодом, который доверял первому кадру с перезаряженного элемента (окно re-present
+         → в кэш попадали кадры ЛЮБЫХ прошлых роликов — «кадр совсем другого видео»).
+         Переснимутся проверенным путём (probe/fframeGrab/snapPoster со штампом). */
+      if((it.fframeV||0)<70){ it.fframe=null; it._pd=false; try{ idbDel('prev',it.id) }catch(e){} n++; continue; }
       var dm=jpgDims(it.fframe); if(!dm||!dm.w)continue;
       var fMax=Math.max(dm.w,dm.h);
       if(it.w&&it.h){                           /* размер источника известен — план 1920 (или сам источник) */
@@ -5196,7 +5408,8 @@ function ffReviveSweep(){
       try{ idbDel('prev',it.id) }catch(e){}
       n++;
     }
-    if(n)NJ('thumbRev','69: устаревших fframe к пересъёмке — '+n);
+    if(n)NJ('thumbRev','70: обложек к пересъёмке (без штампа/мелкие) — '+n);
+    if(n)dlog('обложка','зачистка кэша: к пересъёмке '+n+' (без штампа доверия или мельче плана)');
   }catch(e){}
 }
 var ffBusy=false, ffFail={}, FF={el:null,id:null};
@@ -5226,6 +5439,7 @@ function fframeKick(){
 }
 async function fframeGrab(it){
   try{
+    dlog('обложка','fframeGrab: снимаю первый кадр (свежий элемент) — '+baseName(it.name));
     var f=await ensureFile(it); if(!f){ ffFail[it.id]=1; return; }
     var nU=(it.kind==='native'), u=nU?it.url:URL.createObjectURL(f), v=document.createElement('video');   /* native 2.0: поток вместо objectURL */
     FF.el=v; FF.id=it.id;                    /* 2.5: openItem вызывает ffAbort() — этот элемент погаснет */
@@ -5243,7 +5457,7 @@ async function fframeGrab(it){
       var c=document.createElement('canvas');
       c.width=Math.max(2,Math.round(v.videoWidth*fsc)); c.height=Math.max(2,Math.round(v.videoHeight*fsc));
       c.getContext('2d').drawImage(v,0,0,c.width,c.height);
-      it.fframe=c.toDataURL('image/jpeg',.85); it.fframePos=0; it._pd=true;
+      it.fframe=c.toDataURL('image/jpeg',.85); it.fframePos=0; it.fframeV=70; it._pd=true;   /* 70: свежий элемент — снимок подлинный, штамп */
       if(!it.w){ it.w=v.videoWidth; it.h=v.videoHeight; }
       if(nU&&!it.thumb&&it.duration>0){                  /* native: превью карточки (320×180) тем же элементом — дальний seek 10% */
         try{
@@ -5259,8 +5473,9 @@ async function fframeGrab(it){
         }catch(e2){}
       }
       thumbRev++; persistItem(it); renderSoon();
+      dlog('обложка','fframeGrab: готов первый кадр ('+v.videoWidth+'×'+v.videoHeight+', '+Math.round((''+it.fframe).length/1365)+'КБ, V=70) — '+baseName(it.name));
       if(nU)metaAsync(it,nativeFile(it));                 /* native: теги/встроенная обложка — Range-слайсами псевдо-файла */
-    }catch(e){ if(!v||!v._ffAb)ffFail[it.id]=1; }   /* 2.5: прерывание тапом — НЕ провал файла */
+    }catch(e){ if(!v||!v._ffAb)ffFail[it.id]=1; if(!(v&&v._ffAb))dlog('обложка','fframeGrab: НЕ вышел ('+((e&&e.message)||'?')+') — '+baseName(it.name)); }   /* 2.5: прерывание тапом — НЕ провал файла */
     finally{ if(FF.el===v){ FF.el=null; FF.id=null }
       v.onloadedmetadata=v.onseeked=v.onerror=null; v.removeAttribute('src'); try{v.load()}catch(e2){}; if(!nU)URL.revokeObjectURL(u); }
   }catch(e){ ffFail[it.id]=1; }
@@ -6680,6 +6895,24 @@ async function openItem(idx,opts){
     items[prevIdx].position=vActive.currentTime;
     persistItem(items[prevIdx]);
   }
+  /* 70: кэш кадра позиции УХОДЯЩЕГО трека. Он час играл с середины — при следующем
+     resume-входе маской служит ровно этот кадр (пик-в-пик), а не чёрный. Элемент стабильно
+     играл СВОЙ контент (re-present здесь невозможен), снимок подлинный → штамп V=70.
+     setTimeout(0): не задерживаем открытие цели (постер/подложка рисуются раньше) */
+  (function(el0,it0){ setTimeout(function(){ try{
+    if(el0&&it0&&!it0.audio&&!it0._dead&&el0.readyState>=2&&el0.videoWidth&&el0._pid===it0.id){
+      var pC=capFrame(el0); if(!pC)return;
+      var posC=el0.currentTime||0;
+      if(!it0.fframe||Math.abs((it0.fframePos||0)-posC)>3){
+        var vw0=el0.videoWidth,vh0=el0.videoHeight,FS0=1920,fs0=Math.min(1,FS0/Math.max(vw0,vh0));
+        var c0=document.createElement('canvas'); c0.width=Math.max(2,Math.round(vw0*fs0)); c0.height=Math.max(2,Math.round(vh0*fs0));
+        c0.getContext('2d').drawImage(el0,0,0,c0.width,c0.height);
+        it0.fframe=c0.toDataURL('image/jpeg',.85); it0.fframePos=posC; it0.fframeV=70; it0._pd=true;
+        if(it0.kind!=='memory')persistItem(it0);
+        dlog('кадр','уходящий трек: кэш пополнен кадром позиции '+posC.toFixed(2)+'с V=70 — '+baseName(it0.name));
+      }
+    }
+  }catch(e){} },0); })(vActive,items[prevIdx]);
   try{ stallSameOldStream(it) }catch(e){}   /* 42: уходящий элемент с тем же гигантом доедал его
     в фоне по ~1МБ/с (журнал 2.6: bounded-запросы с 493МБ и через минуту после «НЕ открылось»)
     и делил FUSE/пул чтения с загрузкой цели — гасим его поток, кадр уже прикрыт подложкой/постером */
@@ -6703,6 +6936,7 @@ async function openItem(idx,opts){
   if(mirrorActive()&&!it.audio){ await mirrorOpen(it,my,opts); return; }
   /* источник: готовый запасной элемент → склейка мгновенно; иначе готовим его же */
   var instant=standbyReadyFor(it);
+  dlog('open','открываю ['+idx+'] '+baseName(it.name)+(it.audio?' (аудио)':' (видео)')+' '+fmtSize(it.size||0)+(it.w?' '+it.w+'×'+it.h:'')+' старт='+openPosOf(it)+'с'+(instant?' · instant (элемент прогрет)':' · холодная загрузка'));
   perfOpen(idx,instant);
   var wasPrevPlaying=!vActive.paused;       /* 65: помним, был ли прошлый трек играющим */
   if(wasPrevPlaying)quietPause(vActive);   /* 23.1/26.2: старый звук глушим сразу и ТИХО —
@@ -8505,7 +8739,7 @@ function applyLibSync(m){
           for(var q2=0;q2<items.length;q2++){ var w2=items[q2],p2=pm[w2.id];
             if(!p2)continue;
             if(p2.thumb&&!w2.thumb)w2.thumb=p2.thumb;
-            if(p2.fframe&&!w2.fframe)w2.fframe=p2.fframe;
+            if(p2.fframe&&(p2.fframeV||0)>=70&&!w2.fframe){ w2.fframe=p2.fframe; w2.fframeV=p2.fframeV; }   /* 70: из prev — только СО ШТАМПОМ доверия (загрязнения старых версий не возвращаются) */
             if(p2.fthumb&&!w2.fthumb)w2.fthumb=p2.fthumb;
             if(p2.mcover&&!w2.mcover)w2.mcover=p2.mcover; }
           return added;
@@ -10109,6 +10343,10 @@ function applySetting(k){
     case 'persist':
       if(S.persist)toast(t('persistOn'));
       updStorage(); break;
+    case 'dev':
+      if(window.__devSyncUI)window.__devSyncUI();   /* 70: панель дев-журнала */
+      dlog('дев','журнал '+(S.dev?'включён (панель видна, копирование активно)':'выключен (сбор продолжается)'));
+      break;
   }
 }
 function syncOne(key){
@@ -10225,6 +10463,53 @@ function syncLabel(k){ var l=$('[data-rlabel="'+k+'"]'); if(l)l.textContent=fmtV
     S[k]=!S[k]; b.classList.toggle('on',!!S[k]); b.setAttribute('aria-checked',String(!!S[k])); saveS(); applySetting(k);
   });
 });
+
+/* ═══ 70: дев-режим — живой журнал кадров/обложек + копирование всего лога ═══
+   Сбор (DEVLOG) идёт всегда с запуска; переключатель управляет только панелью.
+   «Скопировать весь лог» кладёт дев-кольцо (1600) + журнал ДИАГ + метки + perf:
+   navigator.clipboard, при отказе WebView — скрытая textarea + execCommand('copy') */
+(function(){
+  var pre=document.getElementById('devLogPre'),wrap=document.getElementById('devLogWrap'),timer=0;
+  function render(){
+    if(!pre)return;
+    var L=(window.__plenkaDevLog&&window.__plenkaDevLog.lines)?window.__plenkaDevLog.lines:[];
+    pre.textContent=L.slice(-280).join('\n');
+    try{ pre.scrollTop=pre.scrollHeight }catch(e){}
+  }
+  function sync(){
+    if(wrap)wrap.hidden=!S.dev;
+    if(S.dev){ render(); if(!timer)timer=setInterval(render,1000); }
+    else if(timer){ clearInterval(timer); timer=0; }
+  }
+  window.__devSyncUI=sync;
+  function flash(msg,kind){ try{ toast(msg,kind||'ok') }catch(e){} }
+  var bc=document.getElementById('btnDevCopy');
+  if(bc)bc.addEventListener('click',function(){
+    var txt=(typeof devDump==='function')?devDump():(''+(window.__plenkaDevLog?window.__plenkaDevLog.lines.join('\n'):''));
+    var n=txt?txt.split('\n').length:0;
+    function fallback(){
+      try{
+        var ta=document.createElement('textarea');
+        ta.value=txt; ta.setAttribute('readonly','');
+        ta.style.cssText='position:fixed;left:-999px;top:0;opacity:0';
+        document.body.appendChild(ta); ta.focus(); ta.select(); ta.setSelectionRange(0,txt.length);
+        var ok=false; try{ ok=document.execCommand('copy') }catch(e2){}
+        document.body.removeChild(ta);
+        flash(ok?('лог скопирован ('+n+' строк)'):'не скопировал — лог слишком большой?','err');
+      }catch(e3){ flash('копирование не удалось','err') }
+    }
+    try{
+      if(navigator.clipboard&&navigator.clipboard.writeText&&txt.length<900000)
+        navigator.clipboard.writeText(txt).then(function(){ flash('лог скопирован ('+n+' строк)') },fallback);
+      else fallback();
+    }catch(e){ fallback(); }
+  });
+  var bcl=document.getElementById('btnDevClear');
+  if(bcl)bcl.addEventListener('click',function(){
+    try{ window.__plenkaDevLog.lines.length=0; render(); flash('журнал очищен (сбор продолжается)') }catch(e){}
+  });
+  sync();
+})();
  $$('.seg[data-seg]').forEach(function(seg){
   seg.addEventListener('click',function(e){
     var b=e.target.closest('button'); if(!b)return;
@@ -10370,7 +10655,7 @@ var NATV_TOK=(function(){ try{ var mT=(location.search||'').match(/[?&]tok=([A-Z
   оболочка кладёт его в URL страницы; loopback Android общий для всех процессов, поэтому данные
   (/v,/a,/c,/t, списки) без валидного токена отдают 404 — чужое приложение медиатеку не выкачает */
 function natvTok(p){ return (NATV&&NATV_TOK)?(p+((p.indexOf('?')<0?'?':'&')+'tok='+NATV_TOK)):p }
-function NJ(tag,msg){ try{ window.__plenkaJ&&window.__plenkaJ(tag,msg) }catch(e){} }   /* 2.3: журнал главного скрипта */
+function NJ(tag,msg){ try{ window.__plenkaJ&&window.__plenkaJ(tag,msg) }catch(e){} }   /* 2.3: журнал главного скрипта; 70: __plenkaJ сам эхом пишет в дев-журнал */
 NJ('init','главный скрипт дошёл до натив-блока, NATV='+NATV);
 function natvCall(fn,arg){
   var t0=Date.now();
@@ -11006,7 +11291,7 @@ try{
         for(var px=0;px<items.length;px++){ var pit=items[px],pp=pm[pit.id];
           if(!pp)continue;
           if(pp.thumb&&!pit.thumb){ pit.thumb=pp.thumb; any=true; }
-          if(pp.fframe&&!pit.fframe)pit.fframe=pp.fframe;
+          if(pp.fframe&&(pp.fframeV||0)>=70&&!pit.fframe){ pit.fframe=pp.fframe; pit.fframeV=pp.fframeV; }   /* 70: восстановление только со штампом доверия (против возврата отравленного кэша) */
           if(pp.fthumb&&!pit.fthumb)pit.fthumb=pp.fthumb;
           if(pp.mcover&&!pit.mcover)pit.mcover=pp.mcover; }
         if(any){ stripSig=null; thumbRev++; renderSoon(); }
