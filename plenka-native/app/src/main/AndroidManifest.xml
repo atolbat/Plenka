@@ -39,6 +39,19 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 3.20: «Открыть с помощью» / «Открыть по умолчанию» — аудио и видео из
+                 проводника, браузера и других приложений (content:// и file://).
+                 Категория DEFAULT обязательна для «по умолчанию», BROWSABLE —
+                 для ссылок из браузера. Тип проверяет контент-провайдер -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="audio/*" />
+            </intent-filter>
         </activity>
 
         <!-- 3.10: фоновый медиа-сервис — сворачивание без PiP -->

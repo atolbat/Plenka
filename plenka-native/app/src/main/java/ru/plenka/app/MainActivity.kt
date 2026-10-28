@@ -91,7 +91,7 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "PLENKA"
         private const val PORT = 8977
-        private const val APP_VERSION = "PLENKA native 3.18 (v65)"
+        private const val APP_VERSION = "PLENKA native 3.20 (v67)"
         private const val RC_PERM = 7
         private const val RC_NOTIF = 10
 
@@ -117,6 +117,7 @@ class MainActivity : Activity() {
         )
         private val MEDIA_ID = Regex("^/(v|a|c)/(\\d+)$")
         private val THUMB_ID = Regex("^/t/(v|a|c)/(\\d+)$")
+        private val EXT_ID = Regex("^/x/(\\d+)$")   /* 3.20: внешние открытия (ACTION_VIEW) */
         private val RANGE_RE = Regex("bytes=(\\d*)-(\\d*)")
 
         @Volatile var inst: MainActivity? = null   /* 3.10: кнопки фонового сервиса найдут активити */
@@ -133,6 +134,18 @@ class MainActivity : Activity() {
     @Volatile private var lastScanAt = 0L               /* 3.8: конверт моложе 2с — из кэша (бут синкает дважды) */
     @Volatile private var lastResumePush = 0L           /* 3.8: PiP-циклы дёргают onResume каждые 5-8с */
     private val thumbInflight = ConcurrentHashMap<String, Future<ThumbRes>>()
+
+    /* ═══ 3.20: внешние открытия («Открыть с помощью» / «Открыть по умолчанию») ═══
+       Оболочка принимает ACTION_VIEW (content:// или file://, audio/video) из проводника,
+       браузера и других приложений. Разрешение — временное (время жизни получателя):
+       реестр сессионный, в файл не пишем. Раздача — /x/<seq> с Range через ContentResolver.
+       Странице карточку доставляет pushExtToPage с ретраями (страница могла ещё не подняться). */
+    private class ExtItem(val seq: Int, val uri: Uri, val name: String, val mime: String,
+                          val size: Long, val audio: Boolean)
+    private val extLock = Any()
+    private val extReg = ArrayList<ExtItem>()
+    @Volatile private var extSeq = 1
+    @Volatile private var pageAlive = false
 
     /* ═══ 3.9: ovh — кэш дескрипторов для MSE-фетчей страницы (как в 3.6) ═══
        Мост страницы качает гигантов сотнями коротких Range-запросов (?ovh=0):
@@ -387,7 +400,9 @@ class MainActivity : Activity() {
                     } catch (e: Exception) { Log.w(TAG, "probe parse: ${e.message}") }
                     Log.i(TAG, "probe: diag=$diag main=$main bridge=$bridge")
                     if (diag && main && bridge == "object") {
+                        pageAlive = true   /* 3.20: страница жива — можно доставлять внешние открытия */
                         webView.evaluateJavascript("window.__plenkaResume&&window.__plenkaResume()", null)
+                        pushExtToPage(6)
                     } else {
                         val why = when {
                             bridge != "object" -> "мост не виден странице ($bridge)"
@@ -448,6 +463,7 @@ class MainActivity : Activity() {
         webView.addJavascriptInterface(nativeBridge, "PlenkaNative")
         setContentView(webView)
         mediaInit()
+        handleViewIntent(intent)   /* 3.20: холодный старт по «Открыть с помощью» */
 
         // сервер уже слушает (bind синхронный в start()) — страница не получит connection refused.
         // 3.18: токен моста в URL страницы; если bind так и не встал — честный тост вместо чёрного экрана
@@ -459,10 +475,91 @@ class MainActivity : Activity() {
                 "text/html; charset=utf-8", null, null)
             Toast.makeText(this, "ПЛЁНКА: локальный сервер не поднялся", Toast.LENGTH_LONG).show()
         }
-        Log.i(TAG, "native 3.18 started, version=$APP_VERSION port=$SRV_PORT sdk=${Build.VERSION.SDK_INT}")
+        Log.i(TAG, "native 3.20 started, version=$APP_VERSION port=$SRV_PORT sdk=${Build.VERSION.SDK_INT}")
 
         // 2.1: право просит сама оболочка, не полагаясь на цепочку страница→мост
         maybeAskPerm()
+    }
+
+    /* ═══ 3.20: приём ACTION_VIEW («Открыть с помощью») ═══ */
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleViewIntent(intent)   /* singleTask: файл открыли при живом приложении */
+    }
+
+    private fun handleViewIntent(intent: Intent?) {
+        if (intent == null || intent.action != Intent.ACTION_VIEW) return
+        val uri = intent.data ?: return
+        val scheme = uri.scheme?.lowercase(Locale.US)
+        if (scheme != "content" && scheme != "file") {
+            Log.w(TAG, "ext: схема $scheme не поддерживается")
+            return
+        }
+        val ext = try { registerExt(uri) } catch (e: Exception) {
+            Log.w(TAG, "ext: ${e.javaClass.simpleName}: ${e.message}"); null
+        } ?: return
+        Log.i(TAG, "ext: принято «${ext.name}» (seq=${ext.seq}, ${ext.mime}, ${ext.size / 1048576}МБ)")
+        pushExtToPage(6)
+    }
+
+    private fun registerExt(uri: Uri): ExtItem {
+        var name = ""
+        var size = 0L
+        try {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)
+                ?.use { c ->
+                    if (c.moveToFirst()) {
+                        name = c.getString(0) ?: ""
+                        size = try { c.getLong(1) } catch (e: Exception) { 0L }
+                    }
+                }
+        } catch (e: Exception) {}
+        if (name.isEmpty()) name = uri.lastPathSegment ?: "внешний файл"
+        var mime = try { contentResolver.getType(uri) } catch (e: Exception) { null } ?: ""
+        val extName = name.substringAfterLast('.', "").lowercase(Locale.US)
+        if (mime.isEmpty() || mime == "application/octet-stream") {   /* провайдер не сказал — угадаем по расширению */
+            mime = when {
+                extName == "mov" -> "video/quicktime"
+                extName == "m4v" -> "video/mp4"
+                extName in VIDEO_EXT -> "video/$extName"
+                extName == "mp3" -> "audio/mpeg"
+                extName == "m4a" || extName == "m4b" -> "audio/mp4"
+                extName == "ogg" || extName == "oga" || extName == "opus" -> "audio/ogg"
+                extName in AUDIO_EXT -> "audio/$extName"
+                else -> mime
+            }
+        }
+        val audio = mime.startsWith("audio/") || extName in AUDIO_EXT
+        val item = ExtItem(extSeq++, uri, name, if (mime.isEmpty()) "video/mp4" else mime, size, audio)
+        synchronized(extLock) {
+            extReg.add(item)
+            if (extReg.size > 8) extReg.removeAt(0)   /* сессионный журнал последних открытий */
+        }
+        return item
+    }
+
+    /** 3.20: доставка карточки странице; страница могла ещё инициализироваться —
+        ретраи с квитанцией (как permResult: тихая потеря исключена) */
+    private fun pushExtToPage(retries: Int) {
+        if (retries <= 0) return
+        val item = synchronized(extLock) { extReg.lastOrNull() } ?: return
+        val json = JSONObject()
+            .put("i", item.seq).put("n", item.name).put("m", item.mime)
+            .put("s", item.size).put("a", item.audio).toString()
+        val js = "(function(){try{return window.__plenkaExt?window.__plenkaExt($json):'no-fn'}catch(e){return 'err'}})()"
+        webView.post {
+            try {
+                webView.evaluateJavascript(js) { res ->
+                    val r = res?.trim()?.removeSurrounding("\"") ?: ""
+                    if (r == "ok") Log.i(TAG, "ext: страница приняла seq=${item.seq}")
+                    else {
+                        Log.w(TAG, "ext: доставка не прошла ($r) — повтор через 0.9с (осталось $retries)")
+                        webView.postDelayed({ pushExtToPage(retries - 1) }, 900)
+                    }
+                }
+            } catch (e: Exception) { Log.w(TAG, "ext push: ${e.message}") }
+        }
     }
 
     override fun onResume() {
@@ -1752,6 +1849,11 @@ class MainActivity : Activity() {
                 serveMedia(out, req, m.groupValues[1], m.groupValues[2].toLongOrNull() ?: -1L)
                 return true   // заголовок говорит Connection: close — закрываем честно; loopback-коннект стоит ~0
             }
+            val xm = EXT_ID.find(path)                         /* 3.20: /x/<seq> — внешние открытия */
+            if (xm != null) {
+                serveExt(out, req, xm.groupValues[1].toIntOrNull() ?: -1)
+                return true
+            }
             if (path == "/favicon.ico") {
                 writeHead(out, 204, "image/x-icon", 0, null, null)
                 return true
@@ -2136,6 +2238,25 @@ class MainActivity : Activity() {
                 srvRec("${req.method} /c/$seq → 404 gone (${e.javaClass.simpleName}: ${e.message?.take(80)}) — реестр вычищен")
                 synchronized(regLock) { pickedReg.removeAll { it.seq == seq } }
                 regSave()
+                try { writeErr(out, 404, "gone", "${e.javaClass.simpleName}: ${e.message?.take(90)}") } catch (e2: Exception) {}
+            } finally {
+                try { afd?.close() } catch (e: Exception) {}
+            }
+        }
+
+        /** 3.20: внешнее открытие («Открыть с помощью»): content-URI сессии, живой резолв.
+            Разрешение временное — при смерти права честный 404, запись вычистится
+            перезаписью журнала. Range — тем же ядром serveAfd, без копирования */
+        private fun serveExt(out: OutputStream, req: Request, seq: Int) {
+            val item = synchronized(extLock) { extReg.find { it.seq == seq } }
+            if (item == null) { writeErr(out, 404, "gone", "внешнее открытие истекло"); return }
+            var afd: AssetFileDescriptor? = null
+            try {
+                afd = contentResolver.openAssetFileDescriptor(item.uri, "r")
+                    ?: throw IOException("fd null")
+                serveAfd(out, req, afd, mimeFor(item.name, item.mime, !item.audio), item.size, "pl-x-$seq")
+            } catch (e: Exception) {
+                srvRec("${req.method} /x/$seq → 404 gone (${e.javaClass.simpleName}: ${e.message?.take(80)})")
                 try { writeErr(out, 404, "gone", "${e.javaClass.simpleName}: ${e.message?.take(90)}") } catch (e2: Exception) {}
             } finally {
                 try { afd?.close() } catch (e: Exception) {}
