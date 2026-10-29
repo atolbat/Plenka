@@ -718,7 +718,7 @@ body.pip #gestureLayer{touch-action:manipulation}
    Отдельный скрипт ДО всего приложения: только ES5, инлайн-стили, ноль зависимостей.
    Живёт, даже если главный скрипт мёртв: ловит его ошибки и уводит их в logcat
    натива, журнал «куда нажали, что получили» — туда же. Кнопка «ДИАГ» и экран
-   отчёта убраны в 64 (репорт юзера); страница v73 / оболочка 3.26. */
+   отчёта убраны в 64 (репорт юзера); страница v74 / оболочка 3.27. */
 (function(){
 var D=window.__plenkaDiag={errs:[],marks:{},journal:[]};
 var T0=Date.now();
@@ -4050,12 +4050,14 @@ async function sbSeek(sb,it,my,gen){
      рождали именно late-догоны с играющего. Если декодер ещё не отдал кадр (rs<2) —
      коротко ждём (маска это прикрывает; это единственная доп-задержка ПЕРВОГО
      в жизни открытия файла, зато карточка и все следующие маски получают постер) */
-  if(!sb.error&&sb._pid&&it&&!it.audio&&(sb.currentTime||0)<=0.06&&!fframeValid(it)){
+  if(!sb.error&&sb._pid===it.id&&it&&!it.audio&&(sb.currentTime||0)<=0.06&&!fframeValid(it)){
     if(sb.readyState<2){
       var tDL=performance.now();
       while(sb.readyState<2&&!sb.error&&performance.now()-tDL<1500){ await new Promise(function(r){ setTimeout(r,60) }); }
       if(gen!=null&&gen!==sb._lgen)return false;
+      if(sb._pid!==it.id)return false;             /* 74/К3: за время ожидания элемент перезарядили — снимок чужого запрещён */
     }
+    if(sb._pid!==it.id)return false;               /* 74/К3: последний гейт перед снимком (финальная инстанция — ffSnapLive) */
     if(sb.readyState>=2&&!sb.seeking)ffSnapLive(it,sb);
   }
   return !sb.error;
@@ -4252,7 +4254,7 @@ var DEVLOG=window.__plenkaDevLog={lines:[],t0:Date.now(),add:function(tag,msg){
 function dlog(tag,msg){ try{ DEVLOG.add(tag,msg) }catch(e){} }
 function devDump(){                          /* текст для кнопки «копировать весь лог» */
   try{
-    var s='ПЛЁНКА v73 / оболочка 3.26 · '+(new Date().toISOString())+' · UA='+navigator.userAgent+'\n';
+    var s='ПЛЁНКА v74 / оболочка 3.27 · '+(new Date().toISOString())+' · UA='+navigator.userAgent+'\n';
     s+='— дев-журнал ('+DEVLOG.lines.length+' строк) —\n'+DEVLOG.lines.join('\n')+'\n';
     try{ var D=window.__plenkaDiag;
       if(D){ s+='\n— журнал ДИАГ ('+D.journal.length+') —\n'+D.journal.join('\n');
@@ -4275,6 +4277,31 @@ function devDump(){                          /* текст для кнопки �
        свап ролей одним тиком → маска уходит. Элемент не показывается без своего кадра.
    R5. Первый кадр пишут только детерминированные места: ffSnapLive (пауза у нуля) и
        бэкфилл/проба (отдельный скрытый элемент). Снимки с играющего видео запрещены. */
+/* ═══ 74: КЛЕЙМ ЦЕЛИ и контракт идентичности — последняя дыра «не того кадра» ═══
+   Журнал v73 поймал сцену вживую: открытие [93] завершило loadStandby (rs=1, «готов»),
+   через тик prefetchNext перезарядил тот же запасной элемент соседом (tyv0Z),
+   stgSwapPlay предъявил его rVFC и свапнул — юзер открыл [93], получил [92],
+   маска цели честно ушла. Контракта «что лежит в запасном» не было ни у одного
+   участника: loadStandby отвечал «готово» о ПРОШЛОМ моменте, показ верил элементу.
+   Правила v74:
+   К1. Открытие клеймит запасной под цель (stgWant). Фоновые прогревы (prefetch/preheat)
+       не имеют права перезаряжать элемент, пока клейм стоит; снимается клейм только
+       свапом, честной ошибкой или закрытием плеера.
+   К2. Свап предъявляет ТОЛЬКО СВОЙ контент: проверка _pid===it.id на входе, внутри
+       framePresent (каждые 90мс) и после предъявления. Чужой — отказ, перезагрузка,
+       маска стоит; чужой кадр на экран попасть не может в принципе.
+   К3. Снимок первого кадра пишется только если элемент держит цель (_pid===it.id)
+       на всех контрольных точках; финальная инстанция — гейт в ffSnapLive.
+   К4. Полные pid+имя владельца во всех кадровых строках журнала (v73 резал pid до
+       «nv:1000008» — девять разных треков выглядели одинаково, лог нечитаем). */
+var stgWant=null;                                  /* id файла, которого открытие ждёт в запасном */
+function pidName(pid){                             /* человекочитаемый владелец элемента для журнала */
+  try{
+    if(pid==null)return '-';
+    for(var i=0;i<items.length;i++)if(items[i]&&items[i].id===pid)return baseName(items[i].name)+'#'+pid;
+    return 'id:'+pid;
+  }catch(e){ return 'id:'+pid }
+}
 function stgMask(it,startAt){                      /* R2: содержимое маски на цель */
   try{
     if(!posterEl)return;
@@ -4293,14 +4320,16 @@ function stgHide(instant){                         /* маска уходит: �
     posterEl._t=setTimeout(function(){ posterEl.hidden=true },200);
   }catch(e){}
 }
-function framePresent(el,my,cap){                  /* R4: обещание ПЕРВОГО предъявленного кадра цели.
+function framePresent(el,my,cap,pid){              /* R4: обещание ПЕРВОГО предъявленного кадра цели.
    Играющий элемент презентует кадры гарантированно (rVFC/playing); поллинга содержимого нет —
-   только события и тайм-кап со страховкой по readyState; видимость элемента не трогаем */
+   только события и тайм-кап со страховкой по readyState; видимость элемента не трогаем.
+   74: pid — ожидаемый владелец элемента: перезарядку чужим ловит опрос (90мс),
+   а не постфактум после свапа */
   return new Promise(function(res){
     var done=false;
     var got=function(why){ if(done)return; done=true;
       try{ el.removeEventListener('playing',pl) }catch(e){}
-      try{ dlog('кадр','предъявление: '+why+' — '+(el._pid?String(el._pid).slice(0,10):'?')) }catch(e){}
+      try{ dlog('кадр','предъявление: '+why+' — '+pidName(el._pid)) }catch(e){}
       res(true); };
     var pl=function(){ got('playing') };
     try{ el.addEventListener('playing',pl) }catch(e){}
@@ -4310,6 +4339,7 @@ function framePresent(el,my,cap){                  /* R4: обещание ПЕ�
     (function poll(){
       if(done)return;
       if(my!=null&&my!==playToken){ done=true; res(false); return; }   /* экраном владеет более новое открытие */
+      if(pid!=null&&el._pid!==pid){ done=true; res(false); return; }   /* 74: элемент перезарядили чужим — предъявлять нечего */
       if(el.error){ got('ошибка элемента'); return; }
       if(el.readyState>=2&&!el.seeking&&performance.now()-t0>300){ got('rs2+300мс'); return; }   /* экзотика без rVFC */
       if(performance.now()-t0>C){ done=true; res(false); return; }
@@ -4317,14 +4347,25 @@ function framePresent(el,my,cap){                  /* R4: обещание ПЕ�
     })();
   });
 }
-async function stgSwapPlay(my){                    /* R1+R4: атом «кадр предъявлен → свап ролей» */
+async function stgSwapPlay(it,my){                 /* R1+R4: атом «кадр предъявлен → свап ролей».
+   74/К2: контракт идентичности — свап разрешён ТОЛЬКО если запасной держит ЦЕЛЬ (it.id)
+   на входе, весь период предъявления и после него. Нарушение — отказ и честный отказ
+   показа (маска стоит), перезагрузка делает вызывающий openItem */
   var old=vActive, sb=vStandby;
   if(sb!==old){
+    if(!sb||sb._pid!==it.id){                      /* 74/К2: в запасном не цель — показ запрещён */
+      NJ('кадр','СВАП ОТКЛОНЁН: запасной держит '+pidName(sb&&sb._pid)+', цель '+baseName(it.name)+' — маска держится');
+      return false;
+    }
     try{ clearTimeout(seekStuckT); clearTimeout(seekSpinT) }catch(e){}   /* 65: таймеры уходящего не бьют по новому video */
     try{ sb.muted=true; if(sb.paused)sb.play().catch(function(){}) }catch(e){}   /* декод стартует в невидимости */
-    var ok=await framePresent(sb,my,5000);
+    var ok=await framePresent(sb,my,5000,it.id);
     if(my!=null&&my!==playToken)return false;      /* перебито: экран принадлежит более новому открытию */
     if(sb!==vStandby)return false;                 /* роли уже разъехались — свап сделает новый вызов */
+    if(sb._pid!==it.id){                           /* 74/К2: контент подменили, пока ждали кадр */
+      NJ('кадр','СВАП ОТКЛОНЁН после предъявления: запасной теперь '+pidName(sb&&sb._pid)+', цель '+baseName(it.name));
+      return false;
+    }
     lastBufs='\u0000';                            /* кэш полос буфера больше не про тот элемент */
     vActive=sb; vStandby=old; video=sb;            /* весь video.* бьёт в новый активный */
     sb.style.zIndex=3; sb.style.visibility=curIsAudio()?'hidden':'';
@@ -4339,8 +4380,9 @@ async function stgSwapPlay(my){                    /* R1+R4: атом «кадр
         if(!p0m||p0m.id!=='miniThumb'){            /* RC-109: элемент в мини-панели — его кадр и есть картинка панели */
           if(old._mseb)msebDestroy(old);
           old.removeAttribute('src'); try{old.load()}catch(e2){}
+          var opid74=old._pid;                     /* 74: в журнал — КТО уходил, до обнуления */
           old._pid=null;
-          dlog('свап','уходящий отгружен (src снят, декодер свободен)');
+          dlog('свап','уходящий отгружен ('+pidName(opid74)+' — src снят, декодер свободен)');
         } } }catch(e){}
     });
     if(!curIsAudio())sndGate=playToken;            /* 39.5: звук нового — после показанного кадра */
@@ -4348,12 +4390,13 @@ async function stgSwapPlay(my){                    /* R1+R4: атом «кадр
     (function(sgt){ setTimeout(function(){ sndGateDrop(sgt) },4000) })(playToken);
     try{ applyFit() }catch(e){}                    /* фит/трансформ гарантированно на новом активном */
     if(ok)stgHide(false);                          /* маска уходит только под предъявленный кадр */
-    dlog('свап','роли: '+((old&&old._pid)?String(old._pid).slice(0,10):'?')+' → '+((sb&&sb._pid)?String(sb._pid).slice(0,10):'?')+(ok?'':' · БЕЗ кадра — маска держится'));
+    dlog('свап','роли: '+pidName(old&&old._pid)+' → '+pidName(sb&&sb._pid)+' ('+baseName(it.name)+')'+(ok?'':' · БЕЗ кадра — маска держится'));
   }else stgHide(false);
   return true;
 }
 function stgReset(){                               /* выход из плеера: маска скрыта, запасной на паузе;
    контент скрытого плеера невидим, следующий openItem стартует со своей маски */
+  stgWant=null;                                    /* 74: клейм открытия мёртв вместе с плеером */
   try{ if(vStandby&&vStandby!==vActive)vStandby.pause() }catch(e){}
   stgHide(true);
 }
@@ -4379,6 +4422,11 @@ async function prefetchNext(){
     if(hiResItem(it))return;                     /* 47: 4К-сосед не греется: запасной элемент с живым
         декодером 2160×3840×60 (софтверным!) душил активное воспроизведение — «лаги высокого
         разрешения», особенно в момент анимаций UI; откроется холодным — moov в начале */
+    if(stgWant)return;                          /* 74/К1: открытие в полёте держит запасной под цель — фон ждёт.
+        Журнал v73, сцена +38.5с: loadStandby вернул «готов», prefetchNext перезарядил
+        элемент соседом, свап предъявил чужое — клейм закрывает это окно полностью */
+    if(vStandby&&vStandby._pid===it.id&&!vStandby._loading)return;   /* 74: элемент уже с этим файлом (декодируется/сикает) —
+        перезарядка с новой генерацией = лишняя гонка и «двойной готов» в журнале */
     if(standbyReadyFor(it))return;              /* уже готов */
     if(vStandby&&vStandby._loading)return;      /* занят загрузкой текущей цели */
     dlog('prefetch','грею соседа в запасной элемент — '+baseName(it.name));
@@ -4412,8 +4460,12 @@ function preheatItem(it,force){
     if(!force&&msebBusy())return;               /* 46: мост наполняется — фоновый прогрев подождёт (тап его перебьёт) */
     if(!player.hidden&&currentIdx>=0&&items[currentIdx]===it)return;
     if(vStandby&&vStandby._loading&&currentIdx>=0&&items[currentIdx]&&vStandby._pid===items[currentIdx].id)return;   /* грузится то, что открыл пользователь — не перебиваем даже force */
+    if(stgWant&&it.id!==stgWant)return;         /* 74/К1: открытие в полёте — фон не отбирает запасной;
+        прогрев СВОЕЙ цели разрешён — он присоединится к той же загрузке (join) */
     if(!force&&vStandby&&vStandby._loading)return;   /* тап перебивает — фоновый прогрев нет */
+    if(vStandby&&vStandby._pid===it.id&&!vStandby._loading)return;   /* 74: уже в запасном — не перезаряжаем */
     if(standbyReadyFor(it))return;              /* уже готов */
+    dlog('prefetch','прогрев из списка — '+baseName(it.name));   /* 74: фоновые загрузки обязаны быть атрибутированы в журнале */
     loadStandby(it,playToken).catch(function(){});
     if(!player.hidden){                          /* в плеере: если тап не состоялся (скролл ленты) — вернуть прогрев соседа */
       clearTimeout(preheatBackT);
@@ -4957,6 +5009,13 @@ function perfSwap(){
 function ffSnapLive(it,el){
   try{
     if(!it||it.audio||!el||el.error)return;
+    if(el._pid!==it.id){                           /* 74/К3: снимок СВОЕГО первого кадра — элемент обязан держать цель.
+        «Не тот кадр» в 70–73: догоняющая загрузка снимала кадр с элемента, который уже
+        перезарядили другим файлом — currentTime у свежего элемента ≈0, все прежние
+        проверки проходили, и чужой кадр записывался в кэш обложек цели */
+      dlog('кадр','ffSnapLive: ОТКАЗ — элемент держит '+pidName(el._pid)+', а не '+baseName(it.name));
+      return;
+    }
     if(el.videoWidth>0&&el.readyState>=2&&!el.seeking&&(el.currentTime||0)<=0.06&&!fframeValid(it)){
       var FSC=1920,fsc=Math.min(1,FSC/Math.max(el.videoWidth,el.videoHeight));
       var c=document.createElement('canvas');
@@ -6478,6 +6537,8 @@ async function openItem(idx,opts){
     индексу/мини-плашке больше не убивает чужое открытие в полёте (его откат не выполнялся бы вовсе) */
   if(MINI.mode==='local'&&MINI.item===it){ openMiniPlayer(); return; }   /* это уже играет в панели — просто открываем плеер */
   var my=++playToken; lastSwAt=Date.now();   /* 66: метка старта переключения — гвард двойного авто-перехода */
+  stgWant=it.id;                             /* 74/К1: клейм — запасной объявлен целью этого открытия;
+     фоновые прогревы ждут до свапа/ошибки, снять клейм может только владелец */
   cardPreviewStop();                                 /* открытие гасит превью карточки (если было) */
   try{ ffAbort() }catch(e){}                         /* 2.5: фоновый декодер fframe не делит I/O с открытием */
   var keepMini=!!opts.keepMini&&MINI.mode==='local';   /* автопереход внутри мини-панели: плеер не открываем */
@@ -6540,7 +6601,7 @@ async function openItem(idx,opts){
   }
   syncAppH();
   /* 24.1: живое оконное PiP — трек играет в самом окне, страница зеркалит; свап не участвует */
-  if(mirrorActive()&&!it.audio){ await mirrorOpen(it,my,opts); return; }
+  if(mirrorActive()&&!it.audio){ await mirrorOpen(it,my,opts); if(stgWant===it.id)stgWant=null; return; }
   /* источник: готовый запасной элемент → склейка мгновенно; иначе готовим его же */
   var instant=standbyReadyFor(it);
   dlog('open','открываю ['+idx+'] '+baseName(it.name)+(it.audio?' (аудио)':' (видео)')+' '+fmtSize(it.size||0)+(it.w?' '+it.w+'×'+it.h:'')+' старт='+openPosOf(it)+'с'+(instant?' · instant (элемент прогрет)':' · холодная загрузка'));
@@ -6550,9 +6611,10 @@ async function openItem(idx,opts){
     пауза открытия не поднимает панель (вспышка UI на старте свайпнутого видео) */
   stgMask(it,openPosOf(it));               /* 73: одна маска на цель — чёрный или доказанный первый кадр (старт с нуля).
                                             Под ней старый кадр: уходящее видео не скрывается до самого свапа */
-  try{ NJ('open','маска: '+(maskSrcOf(it,openPosOf(it))?'первый кадр (fframe v73)':'чёрный')+
-    ' | act='+((vActive&&vActive._pid)||'-')+' rs='+((vActive&&vActive.readyState)||'-')+
-    ' | sb='+((vStandby&&vStandby._pid)||'-')+' rs='+((vStandby&&vStandby.readyState)||'-')) }catch(eM){}
+  try{ NJ('open','маска: '+(maskSrcOf(it,openPosOf(it))?'первый кадр (fframe v'+(it.fframeV||0)+', pos='+(it.fframePos||0).toFixed(2)+'с)':'чёрный')+
+    ' на '+baseName(it.name)+
+    ' | act='+pidName(vActive&&vActive._pid)+' rs='+((vActive&&vActive.readyState)||'-')+
+    ' | sb='+pidName(vStandby&&vStandby._pid)+' rs='+((vStandby&&vStandby.readyState)||'-')) }catch(eM){}
   if(!instant){
     /* 73: маска уже стоит на цели (stgMask выше) — синхронно, без подтверждений и апгрейдов */
     if(it.audio)stgHide(true);
@@ -6582,6 +6644,7 @@ async function openItem(idx,opts){
         currentIdx=cR0>=0?cR0:prevIdx; }catch(eV0){}   /* 66: currentIdx — к фактически играющему */
       stgHide(true);                               /* 73: маска недооткрытой цели не висит: возобновлённый трек
         никуда не прятался — под маской он и стоит, чужих слоёв больше нет */
+      if(stgWant===it.id)stgWant=null;             /* 74: клейм снят — фон снова греет */
       return; }   /* 24.4: перебито другим открытием/прогревом — не ошибка */
     if(!ok){
       hudHoldId=null;                            /* 62: не открылось — панель показывает реальность активного */
@@ -6597,6 +6660,7 @@ async function openItem(idx,opts){
       try{ if(wasPrevPlaying&&vActive._pid&&(!it||it.id!==vActive._pid))vActive.play() }catch(eP){}   /* 65: не оставляем
         уходящий трек замороженным кадром без звука — возвращаем то, что играло до неудачного открытия */
       stgHide(true);                               /* 73: возобновлённый трек сразу виден — под маской он и был */
+      if(stgWant===it.id)stgWant=null;             /* 74: клейм снят при честной ошибке открытия */
       if((lsOut.why||lsWhy)==='gone'){                          /* 2.5: файл недоступен на устройстве — честно и сразу;
         карточку уберёт фоновый перескан (merge видит «исчезло») */
         toast(t('natvOpenGone'),'err');
@@ -6630,7 +6694,21 @@ async function openItem(idx,opts){
     }
   }
   if(my!==playToken)return;
-  await stgSwapPlay(my);                         /* 73: кадр предъявлен в невидимости → свап → маска уходит */
+  var swOK=await stgSwapPlay(it,my);             /* 74/К2: свап только СВОЕГО контента — контракт идентичности */
+  if(!swOK&&my===playToken){                     /* 74: запасной был перезаряжен фоном/гонкой — одна честная перезагрузка цели */
+    NJ('open','запасной не держит цель ('+baseName(it.name)+') — перезагружаю и показываю снова');
+    var o74={}; var ok74=await loadStandby(it,my,o74);
+    if(ok74&&my===playToken)swOK=await stgSwapPlay(it,my);
+  }
+  if(!swOK){                                     /* 74: показ не состоялся — экран возвращаем ТОЛЬКО если он всё ещё наш */
+    if(my===playToken){
+      if(stgWant===it.id)stgWant=null;
+      stgHide(true);
+      try{ if(wasPrevPlaying&&vActive._pid&&(!it||it.id!==vActive._pid))vActive.play() }catch(eP74){}
+    }
+    return;
+  }
+  if(stgWant===it.id)stgWant=null;               /* 74: свап состоялся — фон снова может греть */
   if(my!==playToken)return;
   perfSwap();
   if(keepMini&&MINI.mode==='local'){             /* мини-панель остаётся на экране: новый трек в ней же */
@@ -8116,7 +8194,7 @@ function hideMini(){
 function enterMini(){
   var it=items[currentIdx]; if(!it||!video.src)return;
   MINI.mode='local'; MINI.item=it;
-  exitFS(); stgHide(true); stopHud(); disengageBoost();   /* 73: маска скрыта — элементы в мини/списке без чужих слоёв */
+  exitFS(); stgHide(true); stopHud(); disengageBoost();   /* 73: маска скрыта — элементы в мини/списке без чужих слоёв; 74: клейм не трогаем — открытие может доезжать в мини */
   player.hidden=true; $('#lib').hidden=false;
   miniBar.classList.remove('remote');
   miniTitle.textContent=fileNameOf(it);

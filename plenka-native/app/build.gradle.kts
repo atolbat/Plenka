@@ -11,8 +11,8 @@ android {
         applicationId = "ru.plenka.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 155
-        versionName = "3.26"
+        versionCode = 156
+        versionName = "3.27"
     }
 
     signingConfigs {
