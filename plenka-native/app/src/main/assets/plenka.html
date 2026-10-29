@@ -722,7 +722,7 @@ body.pip #gestureLayer{touch-action:manipulation}
    Отдельный скрипт ДО всего приложения: только ES5, инлайн-стили, ноль зависимостей.
    Живёт, даже если главный скрипт мёртв: ловит его ошибки и уводит их в logcat
    натива, журнал «куда нажали, что получили» — туда же. Кнопка «ДИАГ» и экран
-   отчёта убраны в 64 (репорт юзера); страница v71 / оболочка 3.24. */
+   отчёта убраны в 64 (репорт юзера); страница v72 / оболочка 3.25. */
 (function(){
 var D=window.__plenkaDiag={errs:[],marks:{},journal:[]};
 var T0=Date.now();
@@ -4351,7 +4351,7 @@ var DEVLOG=window.__plenkaDevLog={lines:[],t0:Date.now(),add:function(tag,msg){
 function dlog(tag,msg){ try{ DEVLOG.add(tag,msg) }catch(e){} }
 function devDump(){                          /* текст для кнопки «копировать весь лог» */
   try{
-    var s='ПЛЁНКА v71 / оболочка 3.24 · '+(new Date().toISOString())+' · UA='+navigator.userAgent+'\n';
+    var s='ПЛЁНКА v72 / оболочка 3.25 · '+(new Date().toISOString())+' · UA='+navigator.userAgent+'\n';
     s+='— дев-журнал ('+DEVLOG.lines.length+' строк) —\n'+DEVLOG.lines.join('\n')+'\n';
     try{ var D=window.__plenkaDiag;
       if(D){ s+='\n— журнал ДИАГ ('+D.journal.length+') —\n'+D.journal.join('\n');
@@ -4981,11 +4981,9 @@ function trueAspectPoster(it,pos){/* 67: источник маски ТОЛЬК�
   re-present («совсем другое видео»). Нет доказанного первого — честный чёрный,
   snapPoster/fframeGrab снимут настоящий */
   if(!it)return null;
-  if(pos!=null&&pos>3){
-    if(it.pframe&&(it.pframeV||0)>=70&&Math.abs((it.pframePos||0)-pos)<=3)return it.pframe;   /* 71: кадр позиции —
-      из pframe; раньше читали fframe, который уходящий трек перезаписывал кадром середины */
-    return null;
-  }
+  /* 72: открытие НЕ с начала — кадр НЕ подставляем вовсе (правило юзера): pframe ±3с и любые
+     «похожие» кадры убраны — маска/подложка остаются честным чёрным до первого кадра самого видео */
+  if(pos!=null&&pos>0.5)return null;
   if(it.fframe&&(it.fframeV||0)>=70&&(it.fframePos||0)<=3)return it.fframe;
   var th=(''+(it.thumb||''));
   if(th.indexOf('/t/')<0)return null;
@@ -5233,10 +5231,32 @@ function snapPoster(it){           /* кадр с запасного элеме�
    до-перезарядным (_preFrame) — совпал с ним = чужой, ждём живой декод (микро-сики раскачивают
    декодер); записывается только проверенный кадр со штампом fframeV=70 */
   try{
+    var tgtP=openPosOf(it)||0;
+    if(tgtP>0.5){ dlog('кадр','snapPoster: пропуск — старт не с начала ('+tgtP.toFixed(1)+'с), кадр не подставляем (72) — '+baseName(it.name)); return; }
     var sb=vStandby, myTok=playToken;
     if(!sb||sb._pid!==it.id||sb.error){
       var spw=sb?('pid '+(sb._pid===it.id?'наш':'чужой')):'нет';
       dlog('кадр','snapPoster: отмена (элемент '+spw+', err='+(sb&&sb.error?'да':'нет')+') — '+baseName(it.name)); return; }
+    /* 72: детерминированный снимок ПЕРВОГО кадра: элемент ставится ровно на стартовую позицию,
+       ждём seeked (доверенный паттерн fframeGrab) — и только тогда drawImage */
+    function finB(){
+      try{
+        if(myTok!==playToken||sb.error||sb._pid!==it.id||sb===vActive)return;
+        if(sb.readyState<2||!sb.videoWidth)return;
+        var vw2=sb.videoWidth,vh2=sb.videoHeight,FSC2=1920,fsc2=Math.min(1,FSC2/Math.max(vw2,vh2));
+        var c2=document.createElement('canvas'); c2.width=Math.max(2,Math.round(vw2*fsc2)); c2.height=Math.max(2,Math.round(vh2*fsc2));
+        c2.getContext('2d').drawImage(sb,0,0,c2.width,c2.height);
+        var url2=c2.toDataURL('image/jpeg',.85), pos2=sb.currentTime||0;
+        if(posterEl&&!posterEl.hidden)posterEl.style.setProperty('--pi','url("'+url2+'")');
+        try{ vblankEl._tok=(vblankEl._tok||0)+1 }catch(eT2){}
+        if(vblankEl)vblankEl.style.backgroundImage='url("'+url2+'")';
+        if(!it.fframe||(it.fframePos||0)>0.15||Math.abs((it.fframePos||0)-pos2)>0.05){
+          it.fframe=url2; it.fframePos=pos2; it.fframeV=70; it._pd=true;
+          if(it.kind!=='memory')persistItem(it);
+          dlog('кадр','snapPoster: fframe ← ПЕРВЫЙ кадр (сик на старт) '+pos2.toFixed(2)+'с '+vw2+'×'+vh2+' V=70 — '+baseName(it.name));
+        } else dlog('кадр','snapPoster: fframe уже точный ('+((it.fframePos||0).toFixed(2))+'с) — не перезаписываю — '+baseName(it.name));
+      }catch(e){}
+    }
     var tries=0, staleN=0, pos0=-1, late=false;
     (function poll(){
       try{
@@ -5254,9 +5274,15 @@ function snapPoster(it){           /* кадр с запасного элеме�
               var cN=document.createElement('canvas'); cN.width=Math.max(2,Math.round(vwL*fsl)); cN.height=Math.max(2,Math.round(vhL*fsl));
               cN.getContext('2d').drawImage(sb,0,0,cN.width,cN.height);
               var uL=cN.toDataURL('image/jpeg',.85), pL=sb.currentTime||0;
-              if(!it.fframe||Math.abs((it.fframePos||0)-pL)>3){ it.fframe=uL; it.fframePos=pL; it.fframeV=70; it._pd=true;
+              /* 72: fframe — только действительно ПЕРВЫЙ кадр. Играющий элемент уехал от нуля:
+                 снимок позднее 0.5с — кадр середины, НЕ пишем (переснимет fframeGrab). Близкий
+                 кадр пишем только если он БЛИЖЕ К НУЛЮ кэша: раньше «diff>3» оставлял отраву
+                 0.6/1.4с и блокировал точный кадр («совпадает — не перезаписываю») */
+              if(pL>0.5){ dlog('кадр','snapPoster(late): кадр позиции '+pL.toFixed(2)+'с в fframe НЕ пишу (не первый — переснимет fframeGrab) — '+baseName(it.name)); }
+              else if(!it.fframe||(it.fframePos||0)>0.15||pL<((it.fframePos||0)-0.02)){ it.fframe=uL; it.fframePos=pL; it.fframeV=70; it._pd=true;
                 if(it.kind!=='memory')persistItem(it);
-                dlog('кадр','snapPoster(late): кэш пополнен кадром '+pL.toFixed(2)+'с '+vwL+'×'+vhL+' V=70 (экран не трогаю) — '+baseName(it.name)); }
+                dlog('кадр','snapPoster(late): fframe ← первый кадр '+pL.toFixed(2)+'с '+vwL+'×'+vhL+' V=70 (экран не трогаю) — '+baseName(it.name)); }
+              else dlog('кадр','snapPoster(late): fframe уже точный ('+((it.fframePos||0).toFixed(2))+'с) — не перезаписываю — '+baseName(it.name));
             }
           }
           else if(++tries<=20){ setTimeout(poll,60); }   /* late-догон: играющий элемент вот-вот выдаст кадр */
@@ -5276,6 +5302,15 @@ function snapPoster(it){           /* кадр с запасного элеме�
           try{ sb.currentTime=Math.min(pos0+0.05+0.06*staleN,(sb.duration||1e9)-0.1); }catch(eN){}   /* микро-сик: живой декодер выдаст новый кадр, застывший буфер не сдвинется */
           setTimeout(poll,130); return;
         }
+        /* 72: после проверки живого декода элемент мог уехать от старта (микро-сики против
+           застывшего буфера) — возвращаем РОВНО на стартовую позицию, снимок сделает finB */
+        var tgtB=openPosOf(it)||0;
+        if(Math.abs((sb.currentTime||0)-tgtB)>0.02){
+          try{ sb.pause() }catch(eP9){}
+          try{ sb.currentTime=tgtB }catch(eS9){}
+          try{ once(sb,'seeked',1200).then(finB,finB) }catch(eW9){ setTimeout(finB,80) }
+          return;
+        }
         var vw=sb.videoWidth,vh=sb.videoHeight;
         var FSC=1920, fsc=Math.min(1,FSC/Math.max(vw,vh));   /* 68: 1920 — постер/подложка в истинном разрешении экрана */
         var c=document.createElement('canvas'); c.width=Math.max(2,Math.round(vw*fsc)); c.height=Math.max(2,Math.round(vh*fsc));
@@ -5286,12 +5321,13 @@ function snapPoster(it){           /* кадр с запасного элеме�
           pending-fetch setVblank: инвалидируем его колбэк, пик-в-пик не перебивается кадром 0:00 */
         if(vblankEl)vblankEl.style.backgroundImage='url("'+url+'")';   /* 30.1: подложка докручивается
           синхронно с постером — снятие постера открывает идентичную картинку (пик-в-пик) */
-        var isNew=!it.fframe||Math.abs((it.fframePos||0)-pos)>3;
+        var isNew=!it.fframe||(it.fframePos||0)>0.15||Math.abs((it.fframePos||0)-pos)>0.05;   /* 72: перезаписываем
+          и отраву (>0.15с), и заметно сдвинутый кадр (>0.05с) — детерминированный снимок авторитетен */
         if(isNew){ it.fframe=url; it.fframePos=pos; it.fframeV=70; it._pd=true;   /* 70: штамп доверия —
           «снят проверенным путём с этого файла после подтверждения живого декода» */
           if(it.kind!=='memory')persistItem(it);
-          dlog('кадр','snapPoster: ПОДЛИННЫЙ кадр '+pos.toFixed(2)+'с '+vw+'×'+vh+' → fframe '+(Math.round(url.length/1365))+'КБ (до-перезарядный diff '+dpre+') — '+baseName(it.name)); }
-        else dlog('кадр','snapPoster: кадр позиции совпадает с кэшем — не перезаписываю ('+baseName(it.name)+')');
+          dlog('кадр','snapPoster: fframe ← ПЕРВЫЙ кадр '+pos.toFixed(2)+'с '+vw+'×'+vh+' V=70 '+(Math.round(url.length/1365))+'КБ (до-перезарядный diff '+dpre+') — '+baseName(it.name)); }
+        else dlog('кадр','snapPoster: fframe уже точный ('+((it.fframePos||0).toFixed(2))+'с) — не перезаписываю ('+baseName(it.name)+')');
       }catch(e){}
     })();
   }catch(e){}
@@ -5332,12 +5368,10 @@ function ffReviveSweep(){
     for(var i=0;i<items.length;i++){
       var it=items[i];
       if(!it||it.audio)continue;
-      /* 71: лечение отравления v70: в fframe попадали кадры ПОЗИЦИИ (fframePos>3, писал
-         «уходящий трек») — открытие с нуля маскировалось кадром из середины. Кадр
-         переезжает в pframe (легальный кэш позиции), fframe чистится — первый кадр
-         переснимут probe/fframeGrab/snapPoster */
-      if(it.fframe&&(it.fframePos||0)>3){
-        if(!it.pframe){ it.pframe=it.fframe; it.pframePos=it.fframePos; it.pframeV=it.fframeV||0 }
+      /* 72: планка отравления 3с → 0.15с: поздние снимки играющего элемента (0.56/0.61/1.37с)
+         визуально НЕ первые — в fframe им места нет. pframe упразднён (правило «не с начала —
+         без кадра»), отравленный ключ чистится — первый кадр переснимут probe/fframeGrab/snapPoster */
+      if(it.fframe&&(it.fframePos||0)>0.15){
         it.fframe=null; it._pd=false; try{ idbDel('prev',it.id) }catch(e){} n++; if(it.kind!=='memory')persistItem(it); continue;
       }
       if(!it.fframe||(''+it.fframe).indexOf('data:image/')!==0||it._ffRev)continue;
@@ -6845,26 +6879,10 @@ async function openItem(idx,opts){
     items[prevIdx].position=vActive.currentTime;
     persistItem(items[prevIdx]);
   }
-  /* 71: кэш кадра позиции УХОДЯЩЕГО трека — в ОТДЕЛЬНОМ ключе pframe (не fframe!).
-     Он час играл с середины — при следующем resume-входе маской служит ровно этот кадр
-     (пик-в-пик), а не чёрный. ПОКА v70 писал его поверх fframe (кэша ПЕРВОГО кадра):
-     следующее открытие с нуля/подложка брали кадр из середины — «первые кадры путаются».
-     Элемент стабильно играл СВОЙ контент (re-present здесь невозможен), снимок подлинный.
-     setTimeout(0): не задерживаем открытие цели (постер/подложка рисуются раньше) */
-  (function(el0,it0){ setTimeout(function(){ try{
-    if(el0&&it0&&!it0.audio&&!it0._dead&&el0.readyState>=2&&el0.videoWidth&&el0._pid===it0.id){
-      var pC=capFrame(el0); if(!pC)return;
-      var posC=el0.currentTime||0;
-      if(!it0.pframe||Math.abs((it0.pframePos||0)-posC)>3){
-        var vw0=el0.videoWidth,vh0=el0.videoHeight,FS0=1920,fs0=Math.min(1,FS0/Math.max(vw0,vh0));
-        var c0=document.createElement('canvas'); c0.width=Math.max(2,Math.round(vw0*fs0)); c0.height=Math.max(2,Math.round(vh0*fs0));
-        c0.getContext('2d').drawImage(el0,0,0,c0.width,c0.height);
-        it0.pframe=c0.toDataURL('image/jpeg',.85); it0.pframePos=posC; it0.pframeV=71;
-        if(it0.kind!=='memory')persistItem(it0);
-        dlog('кадр','уходящий трек: pframe пополнен кадром позиции '+posC.toFixed(2)+'с — '+baseName(it0.name));
-      }
-    }
-  }catch(e){} },0); })(vActive,items[prevIdx]);
+  /* 72: pframe («кадр позиции уходящего трека») упразднён: единственный потребитель —
+     подстановка при resume-входе — убран правилом «не с начала — кадр не подставляем».
+     Заодно минус canvas 1920px + JPEG-кодирование + IDB-запись на КАЖДОМ переключении
+     (это и была заметная часть тормозов при листании) */
   try{ stallSameOldStream(it) }catch(e){}   /* 42: уходящий элемент с тем же гигантом доедал его
     в фоне по ~1МБ/с (журнал 2.6: bounded-запросы с 493МБ и через минуту после «НЕ открылось»)
     и делил FUSE/пул чтения с загрузкой цели — гасим его поток, кадр уже прикрыт подложкой/постером */
@@ -6900,7 +6918,7 @@ async function openItem(idx,opts){
                                             безразличны: под постером и под видео одна и та же картинка */
   try{ posterEl._own=my }catch(eP0){}              /* 67: RC-103 — постер принадлежит этому открытию: колбэк
     упавшей/перебитой цели не поднимет кадр над возобновлённым треком */
-  try{ var msk=posterSrcOf(it); NJ('open','маска: постер='+(msk?('есть ('+(((''+msk).indexOf('/t/')===0)?'миниатюра /t':'кадр')+')'):'чёрный')+
+  try{ var msk=trueAspectPoster(it,openPosOf(it)); NJ('open','маска: постер='+(msk?('есть ('+(((''+msk).indexOf('/t/')===0)?'миниатюра /t':'первый кадр')+')'):(openPosOf(it)>0.5?'чёрный (старт не с начала — без кадра)':'чёрный'))+
     ' | act='+((vActive&&vActive._pid)||'-')+' rs='+((vActive&&vActive.readyState)||'-')+
     ' | sb='+((vStandby&&vStandby._pid)||'-')+' rs='+((vStandby&&vStandby.readyState)||'-')) }catch(eM){}   /* 49: репорт
     «первое открытие 4К показывает кадр соседа» — слой-виновник будет виден в следующем дампе */
@@ -11243,7 +11261,7 @@ try{
         for(var px=0;px<items.length;px++){ var pit=items[px],pp=pm[pit.id];
           if(!pp)continue;
           if(pp.thumb&&!pit.thumb){ pit.thumb=pp.thumb; any=true; }
-          if(pp.fframe&&(pp.fframeV||0)>=70&&(pp.fframePos||0)<=3&&!pit.fframe){ pit.fframe=pp.fframe; pit.fframeV=pp.fframeV; }   /* 71: восстановление только со штампом доверия И действительно первого кадра (fframePos≤3; v70 писал в fframe кадры позиции) */
+          if(pp.fframe&&(pp.fframeV||0)>=70&&(pp.fframePos||0)<=0.15&&!pit.fframe){ pit.fframe=pp.fframe; pit.fframeV=pp.fframeV; }   /* 72: восстановление только действительно первого кадра (≤0.15с; прежняя планка ≤3с пропускала отраву 0.6–3с) */
           if(pp.fthumb&&!pit.fthumb)pit.fthumb=pp.fthumb;
           if(pp.mcover&&!pit.mcover)pit.mcover=pp.mcover; }
         if(any){ stripSig=null; thumbRev++; renderSoon(); }
