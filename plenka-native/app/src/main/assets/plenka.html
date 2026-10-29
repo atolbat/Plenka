@@ -333,19 +333,15 @@ input::placeholder{color:var(--dim)}
 #player{position:fixed;left:0;right:0;top:0;height:var(--app-h);background:#000;z-index:10}
 #stage{position:absolute;inset:0;overflow:hidden}
 #video,#videoB{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform-origin:50% 50%;will-change:transform;backface-visibility:hidden}
-#video{z-index:3}   /* 30: активный всегда НАД подложкой #vblank */
+#video{z-index:3}   /* 73: активный элемент видим; запасной гасится visibility:hidden —
+   невидимый элемент не рисуется композитором, чужой кадр невозможен физически */
 #videoB{z-index:1}
-/* 30.1: непрозрачная чёрная подложка МЕЖДУ старым (z1) и новым (z3) видео: в неё вписан
-   (contain) первый кадр ЦЕЛИ, остальное — чистый чёрный. Никогда не прячется и не гасится
-   таймером — видео само перекрывает её первым кадром. Всё, что внизу (старый элемент),
-   физически не может проступить: ни в переходе, ни в леттербоксе, ни в полях PiP-зеркала */
-#vblank{position:absolute;inset:0;z-index:2;pointer-events:none;background:#000 center/contain no-repeat}
 #devLogPre{font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;max-height:230px;overflow:auto;background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.08);padding:8px 10px;border-radius:8px;white-space:pre-wrap;word-break:break-word;margin:8px 0 4px;color:#cfd6cf}
 #video.smooth,#videoB.smooth,#audioArt.smooth{transition:transform .28s cubic-bezier(.2,.8,.2,1)}
-/* постер = ambient blur-up (как YouTube/Google Фото): мыло вместо шакального пискеля;
-   низкое разрешение источника не видно — блёр скрывает пиксели, кадр выглядит намеренно */
-#freeze{position:absolute;inset:0;z-index:3;pointer-events:none;display:none;background:#000 center/contain no-repeat}   /* 30: над активным (z3, DOM-позже), под постером */
-#poster{position:absolute;inset:0;z-index:4;pointer-events:none;background:#000;overflow:hidden;opacity:1;transition:opacity .18s ease}   /* 30: над freeze и активным видео */
+/* 73: маска ОДНА (#poster, z4) — чёрный или валидный первый кадр цели (штамп v73,
+   позиция <=0.05с) только для старта с нуля. Слоёв под ней больше нет:
+   под играющим видео — только второй элемент, и он всегда невидим, когда не активен */
+#poster{position:absolute;inset:0;z-index:4;pointer-events:none;background:#000;overflow:hidden;opacity:1;transition:opacity .18s ease}   /* 73: над обоими элементами */
 #poster::before{content:none}   /* блюр-подложка убрана: поля постера — чистый чёрный, ровно как у видео (contain на #000) — переход пик-в-пик */
 #poster::after{content:'';position:absolute;inset:0;background-image:var(--pi,none);background-size:contain;background-position:center;background-repeat:no-repeat}
 #poster.off{opacity:0}
@@ -722,7 +718,7 @@ body.pip #gestureLayer{touch-action:manipulation}
    Отдельный скрипт ДО всего приложения: только ES5, инлайн-стили, ноль зависимостей.
    Живёт, даже если главный скрипт мёртв: ловит его ошибки и уводит их в logcat
    натива, журнал «куда нажали, что получили» — туда же. Кнопка «ДИАГ» и экран
-   отчёта убраны в 64 (репорт юзера); страница v72 / оболочка 3.25. */
+   отчёта убраны в 64 (репорт юзера); страница v73 / оболочка 3.26. */
 (function(){
 var D=window.__plenkaDiag={errs:[],marks:{},journal:[]};
 var T0=Date.now();
@@ -920,8 +916,6 @@ window.addEventListener('unhandledrejection',function(e){
   <div id="stage">
     <video id="video" playsinline webkit-playsinline preload="auto"></video>
     <video id="videoB" playsinline webkit-playsinline preload="auto" aria-hidden="true" tabindex="-1"></video>
-    <div id="vblank" aria-hidden="true"></div>
-    <div id="freeze" aria-hidden="true"></div>
     <div id="poster" hidden></div>
     <div id="audioArt" aria-hidden="true"></div>
     <div id="grain"></div>
@@ -3720,13 +3714,15 @@ async function doProbe(it){
       throw new Error('novideo');
     }
     if(!it.audio&&it.duration>0&&!it.fframe){        /* скрытый дамми-кадр: первый кадр в истинном аспекте (маска старта).
-        Холст по размеру видео — никаких запечённых полос: постер совпадает с видео пик-в-пик */
+        Холст по размеру видео — никаких запечённых полос: постер совпадает с видео пик-в-пик.
+        73: элемент на паузе, сик на 0.02 — позиция сверяется, снимок штампуется только если элемент стоит НАЧАЛЕ */
       try{
-        v.currentTime=0.04; await once(v,'seeked',4000);
+        v.currentTime=0.02; await once(v,'seeked',4000);
+        var fcPos=Math.max(0,v.currentTime||0);      /* 73: фактическая позиция после сика — она и пишется в штамп */
         var fw=v.videoWidth, fh=v.videoHeight, FSC=1920, fsc=Math.min(1,FSC/Math.max(fw,fh));   /* 68: 1920 — портрет 4К влезает в 1080p-экран 1:1, заглушка не мылится */
         var fc=document.createElement('canvas'); fc.width=Math.max(2,Math.round(fw*fsc)); fc.height=Math.max(2,Math.round(fh*fsc));
         fc.getContext('2d').drawImage(v,0,0,fc.width,fc.height);
-        it.fframe=fc.toDataURL('image/jpeg',.85); it.fframePos=0; it.fframeV=70; it._pd=true; thumbRev++;   /* 70: проба — выделенный свежий элемент (чужой буфер невозможен), штамп доверия */
+        it.fframe=fc.toDataURL('image/jpeg',.85); it.fframePos=fcPos; it.fframeV=73; it._pd=true; thumbRev++;   /* 73: проба — выделенный свежий элемент на паузе у нуля; штамп v73, позиция — фактическая */
         if(f.size>LEAN_TH&&!it.thumb){              /* 33: гиганту превью карточки — с ЭТОГО ЖЕ кадра: один seek вместо двух */
           var lc=document.createElement('canvas'); lc.width=320; lc.height=180;
           var lx=lc.getContext('2d'); lx.fillStyle='#1d1810'; lx.fillRect(0,0,320,180);
@@ -4048,6 +4044,20 @@ async function sbSeek(sb,it,my,gen){
   }
   if(gen!=null&&gen!==sb._lgen)return false;
   sb._seekDone=true;
+  /* 73: единственный детерминированный момент снятия первого кадра с боевого элемента:
+     он на ПАУЗЕ, доведён до стартовой позиции и НИКТО его не видит (запасной всегда
+     скрыт). Играющий элемент для снимков запрещён — «не тот первый кадр» в 70-72
+     рождали именно late-догоны с играющего. Если декодер ещё не отдал кадр (rs<2) —
+     коротко ждём (маска это прикрывает; это единственная доп-задержка ПЕРВОГО
+     в жизни открытия файла, зато карточка и все следующие маски получают постер) */
+  if(!sb.error&&sb._pid&&it&&!it.audio&&(sb.currentTime||0)<=0.06&&!fframeValid(it)){
+    if(sb.readyState<2){
+      var tDL=performance.now();
+      while(sb.readyState<2&&!sb.error&&performance.now()-tDL<1500){ await new Promise(function(r){ setTimeout(r,60) }); }
+      if(gen!=null&&gen!==sb._lgen)return false;
+    }
+    if(sb.readyState>=2&&!sb.seeking)ffSnapLive(it,sb);
+  }
   return !sb.error;
 }
 function warmStandby(sb){
@@ -4163,14 +4173,9 @@ async function loadStandby1(it,my){
       if(ok1&&my===playToken)warmStandby(sb);
       return ok1;
     }
-    sb._lgen=(sb._lgen||0)+1; var gen=sb._lgen;          /* поколение загрузки: гонки preheat/клик/prefetch */
-    /* 70: снимок того, что на композиторе ПЕРЕД перезарядкой — эталон «чужого».
-       После смены src буфер SurfaceTexture на части сборок ещё показывает ЭТОТ
-       кадр (re-present): теперь он опознаётся сравнением содержимого, а не
-       эвристиками по времени. null — элемент пуст (первая загрузка), проверка просто не сработает */
-    sb._preFrame=null;
-    try{ if(sb._pid&&sb._pid!==it.id&&sb.videoWidth&&sb.readyState>=2){ sb._preFrame=capFrame(sb);
-      dlog('кадр','перезарядка элемента: было '+(sb._preFrame?(sb._preFrame.vw+'×'+sb._preFrame.vh+' (pid '+String(sb._pid).slice(0,8)+')'):'снимок не удался')+', цель '+baseName(it.name)); } }catch(e0){}
+    sb._lgen=(sb._lgen||0)+1; var gen=sb._lgen;          /* поколение загрузки: гонки preheat/клик/prefetch.
+       73: снимок-эталон «чужого» (_preFrame) и пиксельные сравнения удалены вместе со всей
+       эвристикой — элемент заряжается В НЕВИДИМОСТИ, сравнивать нечего и некому */
     sb._pid=it.id; sb._seekDone=false; sb._f=f||null;    /* _f: размер цели — для таймаута метаданных */
     try{ sb.pause(); sb.muted=true; }catch(e){}
     if(it.kind==='native'&&(it.size||0)>2e8)sbTap(sb);   /* 42: события элемента гиганта — в журнал (ДИАГ) */
@@ -4182,7 +4187,6 @@ async function loadStandby1(it,my){
       if(sb._mseb)msebDestroy(sb);
       sb.src=u; try{ sb.load() }catch(e){}
     }
-    frameEpoch(sb);                              /* 31.3: база счётчика при ретаргете (в мосте — сразу после исхода) */
     var ev=null;
     if(br&&(sb.readyState||0)>=1){                /* 45: мост аппендит init ВНУТРИ msebOpen — 'loadedmetadata'
         прилетает ДО подписки once(): проигранная гонка = ложный таймаут 9-24с и перезагрузка
@@ -4227,114 +4231,11 @@ async function loadStandby1(it,my){
       до своего gen-чекпоинта — двойной неудачный pre-retarget больше не отключает префетч навсегда */
   }
 }
-/* ═══ 31.3: эпоха кадров ═══ totalVideoFrames — накопительный счётчик ЭЛЕМЕНТА: в окне между
-   сменой src и сбросом статистики он ещё держит кадры ПРОШЛОГО ролика — painted()
-   срабатывал ложно, маски падали раньше фактического кадра новой загрузки. Снимаем базу
-   при каждом ретаргете: «доказанный кадр» = счётчик УШЁЛ от базы, либо rVFC, пойманный в
-   этой же эпохе (guard по поколению: колбэк прошлого ретаргета не считается) */
-var PVSEQ=0;
-function pvReal(el,md){                     /* 68: гвард кадра по медиа-времени. После ретаргета элемента
-  SurfaceTexture на части сборок отдаёт ПОСЛЕДНИЙ БУФЕР ПРОШЛОЙ загрузки (re-present) —
-  счётчик растёт, rVFC звонит, маски падали на чужом кадре («мгновение — кадр или само
-  видео от прошлого»). Кадр считается своим, только если mediaTime в таймлайне текущего
-  медиа: близко к currentTime и не за пределом длительности */
-  try{
-    if(!md||!isFinite(md.mediaTime))return true;   /* метаданных нет — как раньше */
-    var d=el&&el.duration;
-    if(isFinite(d)&&d>0&&md.mediaTime>d+1)return false;
-    var ct=(el&&el.currentTime)||0;
-    return Math.abs(md.mediaTime-ct)<=4;
-  }catch(e){ return true }
-}
-function pvObserve(el,md){                  /* 69: учёт предъявленного кадра. Два гвоздя против «мгновения —
-  кадр совсем другого видео» (репорт после 68): (1) размер предъявленного кадра обязан совпадать
-  с videoWidth/Height ТЕКУЩЕЙ загрузки — буфер прошлого ролика другого разрешения отсеивается
-  сразу; (2) фиксируем рост mediaTime между предъявлениями: застывший буфер прошлого
-  пере-предъявляется с ОДНИМ И ТЕМ ЖЕ mediaTime (68-гвард pvN>=2 это пропускал — отсюда «кадр
-  ЛЮБОГО из прошлых роликов»), живой декодер нового файла — растёт. false — кадр точно чужой */
-  try{
-    if(!md||!isFinite(md.mediaTime))return true;
-    if(el.videoWidth>0&&md.width>0&&(md.width!==el.videoWidth||md.height!==el.videoHeight))return false;
-    if(el._pvMt!=null&&md.mediaTime>el._pvMt+0.005)el._pvAdv=true;
-    el._pvMt=md.mediaTime;
-  }catch(e){}
-  return true;
-}
-function pvOk(el,md){                       /* 69: кадр СВОЙ — размер совпал, mediaTime в таймлайне И растёт;
-  страховка от вечных масок: 2.5с после ретаргета принимаем и без роста (экзотика таймстемпов) */
-  try{
-    if(!pvObserve(el,md))return false;
-    if(!pvReal(el,md))return false;
-    if(el._pvAdv)return true;
-    return !!(el._pvT0&&Date.now()-el._pvT0>2500);
-  }catch(e){ return true }
-}
-function frameEpoch(el){
-  if(!el)return;
-  var g=++PVSEQ; el._pvGen=g; el._pvHit=false; el._pvN=0; el._pvMt=null; el._pvAdv=false; el._pvT0=Date.now();   /* 69: родословная кадра эпохи */
-  try{ el._pvBase=el.getVideoPlaybackQuality().totalVideoFrames }catch(e){ el._pvBase=0 }
-  if('requestVideoFrameCallback' in el){
-    try{ el.requestVideoFrameCallback(function(md){
-      if(el._pvGen!==g)return;
-      el._pvN=(el._pvN||0)+1;
-      if(el._pvN<2)return;                  /* 68: ПЕРВОЕ предъявление после ретаргета — под подозрением */
-      if(!pvObserve(el,md))return;          /* 69: размер кадра ≠ текущая загрузка — чужой буфер */
-      if(!pvReal(el,md))return;             /* 68: чужой таймлайн — не доказательство */
-      if(!el._pvAdv&&el._pvT0&&Date.now()-el._pvT0<=2500)return;   /* 69: mediaTime не растёт —
-        застывший буфер прошлого пере-предъявляется; живой декодер растёт */
-      el._pvHit=true;
-    }) }catch(e){}
-  }
-}
-function frameProof(el){                    /* кадр ИМЕННО текущей загрузки показан */
-  if(!el)return false;
-  try{
-    var q=el.getVideoPlaybackQuality().totalVideoFrames;
-    if(el._pvHit===true)return true;        /* rVFC этой эпохи (с медиа-гвардом 68) */
-    if(el._pvBase==null)return q>0;         /* элемент вне эпохи — прежняя семантика */
-    if(q===el._pvBase)return false;         /* счётчик на базе — кадра ещё не было */
-    if(q<el._pvBase)                        /* 68: счётчик сброшен ПОД базой (перезарядка элемента): */
-      return el._pvAdv===true||q>2||!!(el._pvShownAt&&Date.now()-el._pvShownAt>1200);   /* 69: доказательства — рост mediaTime
-        или 3+ кадра (застывший буфер даёт 1-2 re-present'а); тайм-эскейп длиннее: подложка под маской
-        рисует ПЕРВЫЙ кадр цели, спешить некуда */
-    return el._pvAdv===true||q>2||!!(el._pvShownAt&&Date.now()-el._pvShownAt>1200);   /* 69: и при штатном росте счётчика
-      два предъявления мог дать застывший буфер прошлого — верим только росту mediaTime/живому декоду */
-  }catch(e){ return el.readyState>=2 }      /* API нет — доверяем декодеру */
-}
-/* ═══ 70: проверка кадра ПО СОДЕРЖИМОМУ ═══
-   Репорты 68/69 («кадр совсем другого видео», «под видео виден чужой кадр с другим
-   аспектом») показали: гварды по mediaTime/счётчикам — костыль вокруг того, что
-   drawImage и композитор читают ОДИН И ТОТ ЖЕ буфер SurfaceTexture, а после
-   перезарядки элемента там может лежать кадр прошлой загрузки. Раз буфер общий —
-   снимаем с него контрольный мини-снимок и СРАВНИВАЕМ ПО ПИКСЕЛЯМ:
-   • снимок ≈ снимку ДО перезарядки (_preFrame) → на композиторе всё ещё прошлый ролик;
-   • снимок ≈ эталону цели (проверенный fframe) → это действительно кадр этого видео.
-   Пороги: разница 0..255 по среднему |Δ| яркости. Совпадение <1.5 — «тот же кадр»
-   (артефактов нет), совпадение с эталоном ≤24 — «кадр цели» (JPEG-шум 1920→64px +
-   микродвижок за 40мс укладываются в ~10-20), чужой ролик обычно >40. */
-var CAPW=64;                                /* 71: LASTREF/refCapFor/REFCACHE удалены вместе с
-  content-гвардом показа (70) — единственным их потребителем был reveal; сравнение с
-  _preFrame в snapPoster ЖИВО: оно защищает кэш fframe от чужого буфера перезарядки */
-function capFrame(el){
-  try{
-    if(!el||!el.videoWidth)return null;
-    var w=CAPW,h=Math.max(2,Math.round(CAPW*el.videoHeight/el.videoWidth));
-    var c=document.createElement('canvas'); c.width=w; c.height=h;
-    var x=c.getContext('2d'); x.drawImage(el,0,0,w,h);
-    var d=x.getImageData(0,0,w,h).data,a=new Uint8Array(w*h),px=0;
-    for(var i=0;i<a.length;i++){ a[i]=(d[px]*38+d[px+1]*53+d[px+2]*10)>>6; px+=4; }   /* luma .30/.42/.08 → 0..255 */
-    return {a:a,w:w,h:h,vw:el.videoWidth,vh:el.videoHeight};
-  }catch(e){ return null }                  /* tainted canvas (внешние url-потоки) — проверки честно деградируют */
-}
-function frameDiff(p,q){                    /* средняя |Δ| яркости 0..255; нет пары/разные размеры — -1 */
-  try{
-    if(!p||!q||!p.a||!q.a||p.a.length!==q.a.length)return -1;
-    var s=0,d;
-    for(var i=0;i<p.a.length;i++){ d=p.a[i]-q.a[i]; s+=d<0?-d:d; }
-    return Math.round((s/p.a.length)*10)/10;
-  }catch(e){ return -1 }
-}
-var REFCACHE={};                            /* 71: (историч.) */
+/* 73: машина «доказательств кадра» (PVSEQ/pvReal/pvObserve/pvOk/frameEpoch/frameProof/
+   capFrame/frameDiff/REFCACHE/CAPW) удалена целиком: она гвардила показ элемента от
+   re-present буфера прошлой загрузки. STG решает это архитектурно — элемент, у которого
+   чужой буфер, всегда visibility:hidden; виден он становится только после предъявления
+   СВОЕГО кадра (framePresent). Сравнивать содержимое больше не с чем и незачем. */
 /* ═══ 70: дев-журнал ═══ полный журнал жизненного цикла кадров/обложек (кольцо 1600):
    NJ-строки (ДИАГ) + dlog-строки. Всегда копится, виден и копируется в настройках
    → «Разработчику». window.__plenkaDevLog доступен и из консоли */
@@ -4351,7 +4252,7 @@ var DEVLOG=window.__plenkaDevLog={lines:[],t0:Date.now(),add:function(tag,msg){
 function dlog(tag,msg){ try{ DEVLOG.add(tag,msg) }catch(e){} }
 function devDump(){                          /* текст для кнопки «копировать весь лог» */
   try{
-    var s='ПЛЁНКА v72 / оболочка 3.25 · '+(new Date().toISOString())+' · UA='+navigator.userAgent+'\n';
+    var s='ПЛЁНКА v73 / оболочка 3.26 · '+(new Date().toISOString())+' · UA='+navigator.userAgent+'\n';
     s+='— дев-журнал ('+DEVLOG.lines.length+' строк) —\n'+DEVLOG.lines.join('\n')+'\n';
     try{ var D=window.__plenkaDiag;
       if(D){ s+='\n— журнал ДИАГ ('+D.journal.length+') —\n'+D.journal.join('\n');
@@ -4362,140 +4263,99 @@ function devDump(){                          /* текст для кнопки �
     return s;
   }catch(e){ return '' }
 }
-function swapRoles(){
-  var old=vActive, sb=vStandby;
-  dlog('свап','активный: '+((old&&old._pid)?String(old._pid).slice(0,8):'?')+' → '+((sb&&sb._pid)?String(sb._pid).slice(0,8):'?')+' (старый rs='+((old&&old.readyState)||'-')+', новый rs='+((sb&&sb.readyState)||'-')+')');
-  try{ clearTimeout(seekStuckT); clearTimeout(seekSpinT) }catch(e){}   /* 65: seek-таймеры уходящего элемента
-      не должны сработать уже по новому video и дёрнуть лишний reloadActiveTo */
-  lastBufs='\u0000';                            /* кэш полос буфера больше не про тот элемент */
-  vActive=sb; vStandby=old; video=sb;           /* весь video.* теперь бьёт в новый активный */
-  sb.style.zIndex=3; old.style.zIndex=1;   /* 30: новый НАД подложкой, старый ПОД ней — его кадр
-                                             больше не виден ни в переходе, ни в леттербоксе */
-  try{ old.pause(); old.muted=true; }catch(e){}
-  try{                                          /* 65: уходящий элемент был зеркалом оконного PiP — окно уходит вместе
-      с ним, иначе висит стоп-кадр старого трека при живом звуке нового (video→audio,
-      swap при открытом PiP вне mirror-пути) */
-    if(document.pictureInPictureElement&&old&&document.pictureInPictureElement===old&&document.exitPictureInPicture){
-      document.exitPictureInPicture().catch(function(){}); PIP.native=false; PIP.mode='off';
-    }
+/* ═══ STG v73: машина показа — строгая архитектура вместо эвристик ═══
+   R1. Роли: vActive (видим) и vStandby (visibility:hidden + пауза + mute; src снимается
+       сразу после показа нового). Невидимый элемент не композитится — re-present буфера
+       прошлой загрузки физически не может попасть на экран.
+   R2. Маска одна (#poster): чёрный или ВАЛИДНЫЙ первый кадр цели (fframeV>=73,
+       fframePos<=0.05) и только при старте с нуля (правило юзера: resume — чёрный).
+   R3. Гонки гасятся единственным механизмом — токеном playToken; пиксельных гвардов,
+       mediaTime-эвристик и таймерных страховок в горячем пути нет.
+   R4. Показ = play() (mute) в невидимости → первый предъявленный кадр (rVFC/playing) →
+       свап ролей одним тиком → маска уходит. Элемент не показывается без своего кадра.
+   R5. Первый кадр пишут только детерминированные места: ffSnapLive (пауза у нуля) и
+       бэкфилл/проба (отдельный скрытый элемент). Снимки с играющего видео запрещены. */
+function stgMask(it,startAt){                      /* R2: содержимое маски на цель */
+  try{
+    if(!posterEl)return;
+    var src=maskSrcOf(it,startAt);
+    posterEl.style.setProperty('--pi',src?('url("'+src+'")'):'none');
+    posterEl.hidden=false; posterEl.classList.remove('off');
+    clearTimeout(posterEl._t);
   }catch(e){}
-  old._seekDone=false;                          /* при возврате к нему — перескок на сохранённую позицию */
-  (function(oldEl,lgen0){                       /* 47: уходящий HIGH-RES элемент (теперь standby) держит живой
-      4К-декодер + буфер всё время, пока играет следующий трек — на бюджетном SoC это
-      «лаги высокого разрешения» и фризы при анимациях UI. Через 3с после склейки
-      (кадр-маска перехода уже не нужен) отпускаем его поток полностью; вернулся
-      в актив — не трогаем; холодный перевход ~0.3с (moov в начале) */
-    setTimeout(function(){
-      try{
-        if(oldEl!==vStandby||oldEl===vActive||oldEl._loading||oldEl._lgen!==lgen0)return;   /* 66: элемент перезаряжен после свапа — не наша цель */
-        var p0m=oldEl.parentNode; if(p0m&&p0m.id==='miniThumb')return;   /* 67: RC-109 — элемент уехал в мини-панель: его кадр и есть картинка панели */
-        var pid=oldEl._pid,it=null;
-        for(var q=0;q<items.length;q++)if(items[q].id===pid){it=items[q];break}
-        if(!it||it.audio||((it.w||0)*(it.h||0))<2200000)return;
-        try{ if(oldEl._mseb)msebDestroy(oldEl) }catch(e0){}
-        try{ oldEl.pause() }catch(e1){}
-        try{ oldEl.removeAttribute('src') }catch(e2){}
-        try{ oldEl.load() }catch(e3){}
-        oldEl._pid=null; oldEl._seekDone=false;
-        NJ('open','4К-элемент освобождён (декодер/память не держим)');
-      }catch(e){}
-    },3000);
-  })(old,old._lgen);
-  if(AG&&AG.srcs)reconnectGraph(old,sb);
-  if(!curIsAudio())sndGate=playToken;           /* 39.5: звук нового трека — строго после первого ПОКАЗАННОГО кадра */
-  applyAudio();
-  (function(sgt){ setTimeout(function(){ sndGateDrop(sgt) },4000) })(playToken);   /* 39.5: страховка — кадра нет, звук не молчит вечно */                                 /* новый активный снимается с mute запасного — иначе после склейки тишина */
-  /* призрак прошлого кадра: в леттербоксе широкого видео просвечивал старый
-     портретный элемент (z=1) — гасим его, как только новый нарисовал кадр */
-  sb.style.visibility=curIsAudio()?'hidden':'';   /* аудио: элементы скрыты, обложка на экране */
-  var mySwTok=playToken;                          /* 67: токен свапа — очистку подложки делает только свой переход */
-  var killOld=function(){ try{ if(old!==vActive){ old.style.visibility='hidden';
-    if(mySwTok===playToken&&vblankEl)setTimeout(function(){
-      if(mySwTok===playToken&&vActive===sb&&vblankEl){ vblankEl.style.backgroundImage=''; dlog('подложка','кадр подложки погашен (500мс после показа) — дальше чистый чёрный'); } },500); } }catch(e){} };   /* 67: VL-2 → 68:
-    кадр подложки гасится через 500мс после показанного кадра: если доказательство оказалось
-    ложным (устаревший буфер), прозрачный новый элемент ещё видит под собой вписанный первый
-    кадр ЦЕЛИ — тот же пик-в-пик, мигания нет; зум/пан/перезарядка в эти полсекунды не
-    подставят чужой кадр в поля (рисует целевой), после — чистый чёрный, центр перекрыт */
-  /* 24.4: постер не прикрывает (портрет/нет fframe/мгновенная склейка) — новый элемент мог
-     показать УСТАРЕВШИЙ кадр (прошлый ролик или прошлую позицию) на мгновение до декодирования
-     цели: «новое → мигнуло старое → снова новое». Держим новый скрытым до первого показанного
-     кадра (rVFC); старый замерший кадр остаётся маской. */
-  if(!curIsAudio()&&old.readyState>0){       /* 27.2: hold ВСЕГДА (постер — не условие: под ним
-    элемент тоже мог показать прозрачность/устаревший кадр) */
-    var revealed=false,paintDone=false,softN=0,revStarted=false;
-    var painted=function(){ return frameProof(sb) };   /* 31.3: эпоха — голый счётчик обманывался
-      устаревшим значением прошлого ролика (окно до сброса статистики), маски падали раньше кадра */
-    var finish=function(){ if(paintDone)return; paintDone=true;
-      try{ if(sb===vActive)sb.style.visibility='' }catch(e){}
-      killOld(); hideFreeze(); sndGateDrop(playToken); };   /* 39.5: кадр показан — звук нового включается здесь же */           /* 27.2: маска уходит вместе со старым кадром */
-    var softFinish=function(){               /* 28.1: кап без подтверждённого кадра маски НЕ сбрасывает:
-      старый кадр/freeze — и есть маска декодирования; слепое завершение оголяло чёрный
-      экран между постером и стартом видео при быстрых переключениях */
-      if(paintDone)return;
-      if(sb!==vActive)return;                /* свап перебит — экраном владеет более новый */
-      if(sb.error||painted()){ finish(); return; }
-      if(++softN>66){ finish(); return; }    /* 66: абсолютный кап ~10с — «живой» элемент без кадра и без
-                                                error больше не держит маски (и интервал) вечно */
-      setTimeout(softFinish,150);            /* кадр ещё не показан — маски держим, проверим снова */
-    };
-    var reveal=function(){                    /* 71: показ кадра БЕЗ сравнения содержимого. Гвард 70
-      («ЧУЖОЙ» по пикселям против эталона первого кадра) на прогретых открытиях сравнивал
-      УЖЕ ИГРАЮЩИЙ элемент (t=1с+) с кадром t=0 — diff рос 28→78, элемент держался скрытым
-      2.2с, постер висел, звук играл («видео тормозят», «первые кадры путаются», спам в логе).
-      Архитектура: готовность декодера (readyState≥2, вне сика) → показ; снятие масок —
-      только по pvOk-доказательству rVFC (свой размер + рост mediaTime) или тайм-эскейпам.
-      От отравления кэша это НЕ зависит: чистоту fframe обеспечивает snapPoster (71) */
-      if(revStarted||paintDone)return; revStarted=true;   /* revStarted ≠ revealed: revealed — факт видимости */
-      var doReveal=function(why){
-        if(revealed||paintDone)return; revealed=true;
-        try{ if(sb===vActive){ sb.style.visibility=''; sb._pvShownAt=Date.now() } }catch(e){}
-        dlog('кадр','ПОКАЗ элемента: '+why+' — '+(sb._pid?String(sb._pid).slice(0,8):'?'));
-        /* маски (старый кадр, freeze, постер) прячем только ПОСЛЕ первого показанного
-           кадра нового — иначе под ними успевает блеснуть пустой элемент */
-        try{ (function pvFin(){ sb.requestVideoFrameCallback(function(md){   /* 68: медиа-гвард —
-            устаревший буфер прошлой загрузки маски не снимает, ждём свой кадр дальше */
-          if(sb!==vActive)return;
-          if(pvOk(sb,md)){ finish(); return }   /* 69: размер+рост mediaTime — см. pvOk */
-          try{ sb._pvLogN=(sb._pvLogN||0)+1; if(sb._pvLogN<=3)dlog('кадр','предъявление отклонено (ж'+((md&&md.mediaTime)||'?')+') — маски держу') }catch(eL){}
-          pvFin() }) })() }catch(e){}
-        requestAnimationFrame(function(){ requestAnimationFrame(softFinish) });   /* 27g/28.1:
-          rAF — проверка, а не финиш: вердикт выносит painted() */
-        setTimeout(softFinish,1200);
-      };
-      if(sb.error){ doReveal('ошибка элемента'); return; }
-      doReveal('готов rs='+sb.readyState+(sb.seeking?' (сик в полёте)':''));
-    };
-    var waitFrame=function(){
-      if(revealed||paintDone)return;
-      if(sb!==vActive)return;                /* 28.1: элементы ушли новому свапу — не мешаем */
-      if(sb.error||(sb.readyState>=2&&!sb.seeking)){ reveal(); return; }   /* 68: сик в полёте — кадр ещё не тот */
-      setTimeout(waitFrame,60);               /* без капа: маски не дают чёрному появиться */
-    };
-    sb.style.visibility='hidden';
-    waitFrame();                             /* 28.1: поллинг — НЕМЕДЛЕННО: прогретый warmStandby
-      элемент стоит на паузе и не презентует новых кадров — rVFC, зарегистрированный ПОСЛЕ его
-      кадров, не срабатывает вовсе; раньше waitFrame запускался только из rVFC и висел до 6с,
-      пока кап постера (3с) оголял чёрный экран / кадр прошлого видео */
-    if('requestVideoFrameCallback' in sb){ try{ sb.requestVideoFrameCallback(function(){ waitFrame() }) }catch(e){} }
-    setTimeout(function(){                    /* абсолютный страх. кап — маски всё равно прикрывают */
-      if(paintDone)return;
-      if(!revealed){ if(sb.readyState>=2||sb.error)reveal(); else softFinish(); }
-      else softFinish();
-    },6000);
-    return;
-  }
-  if('requestVideoFrameCallback' in sb){ try{ sb.requestVideoFrameCallback(function(){ killOld(); hideFreeze(); }) }catch(e){ setTimeout(function(){ killOld(); hideFreeze(); },180) } }
-  else setTimeout(function(){ killOld(); hideFreeze(); },180);
-  setTimeout(function(){                    /* 28.1: неиграющий элемент не презентует кадров — rVFC мог не сработать;
-                                               призрак старого кадра не должен висеть. 28.2: маски снимаем только под
-                                               подтверждённый контент (показанный кадр/ошибка) — иначе оголяли экран */
-    try{
-      if(sb!==vActive)return;
-      var pv=false;
-      try{ pv=frameProof(sb) }catch(e){ pv=sb.readyState>=2 }   /* 31.3 */
-      if(pv||sb.error){ killOld(); hideFreeze(); }
-    }catch(e){}
-  },1500);
+}
+function stgHide(instant){                         /* маска уходит: мгновенно или фейдом */
+  try{
+    if(!posterEl||posterEl.hidden)return;
+    clearTimeout(posterEl._t);
+    if(instant){ posterEl.hidden=true; return; }
+    posterEl.classList.add('off');
+    posterEl._t=setTimeout(function(){ posterEl.hidden=true },200);
+  }catch(e){}
+}
+function framePresent(el,my,cap){                  /* R4: обещание ПЕРВОГО предъявленного кадра цели.
+   Играющий элемент презентует кадры гарантированно (rVFC/playing); поллинга содержимого нет —
+   только события и тайм-кап со страховкой по readyState; видимость элемента не трогаем */
+  return new Promise(function(res){
+    var done=false;
+    var got=function(why){ if(done)return; done=true;
+      try{ el.removeEventListener('playing',pl) }catch(e){}
+      try{ dlog('кадр','предъявление: '+why+' — '+(el._pid?String(el._pid).slice(0,10):'?')) }catch(e){}
+      res(true); };
+    var pl=function(){ got('playing') };
+    try{ el.addEventListener('playing',pl) }catch(e){}
+    try{ if('requestVideoFrameCallback' in el)el.requestVideoFrameCallback(function(){ got('rVFC') }) }catch(e){}
+    if(el.error){ got('ошибка элемента'); return; }
+    var t0=performance.now(),C=cap||5000;
+    (function poll(){
+      if(done)return;
+      if(my!=null&&my!==playToken){ done=true; res(false); return; }   /* экраном владеет более новое открытие */
+      if(el.error){ got('ошибка элемента'); return; }
+      if(el.readyState>=2&&!el.seeking&&performance.now()-t0>300){ got('rs2+300мс'); return; }   /* экзотика без rVFC */
+      if(performance.now()-t0>C){ done=true; res(false); return; }
+      setTimeout(poll,90);
+    })();
+  });
+}
+async function stgSwapPlay(my){                    /* R1+R4: атом «кадр предъявлен → свап ролей» */
+  var old=vActive, sb=vStandby;
+  if(sb!==old){
+    try{ clearTimeout(seekStuckT); clearTimeout(seekSpinT) }catch(e){}   /* 65: таймеры уходящего не бьют по новому video */
+    try{ sb.muted=true; if(sb.paused)sb.play().catch(function(){}) }catch(e){}   /* декод стартует в невидимости */
+    var ok=await framePresent(sb,my,5000);
+    if(my!=null&&my!==playToken)return false;      /* перебито: экран принадлежит более новому открытию */
+    if(sb!==vStandby)return false;                 /* роли уже разъехались — свап сделает новый вызов */
+    lastBufs='\u0000';                            /* кэш полос буфера больше не про тот элемент */
+    vActive=sb; vStandby=old; video=sb;            /* весь video.* бьёт в новый активный */
+    sb.style.zIndex=3; sb.style.visibility=curIsAudio()?'hidden':'';
+    old.style.zIndex=1; old.style.visibility='hidden';   /* старый не «под» новым, а ВООБЩЕ не рисуется */
+    try{ old.pause(); old.muted=true }catch(e){}
+    try{ if(document.pictureInPictureElement&&document.pictureInPictureElement===old&&document.exitPictureInPicture){
+      document.exitPictureInPicture().catch(function(){}); PIP.native=false; PIP.mode='off'; } }catch(e){}
+    old._seekDone=false;
+    requestAnimationFrame(function(){              /* кадр свапа ушёл на экран — старому элементу контент не нужен */
+      try{ if(vStandby===old&&vActive!==old&&!old._loading){
+        var p0m=old.parentNode;
+        if(!p0m||p0m.id!=='miniThumb'){            /* RC-109: элемент в мини-панели — его кадр и есть картинка панели */
+          if(old._mseb)msebDestroy(old);
+          old.removeAttribute('src'); try{old.load()}catch(e2){}
+          old._pid=null;
+          dlog('свап','уходящий отгружен (src снят, декодер свободен)');
+        } } }catch(e){}
+    });
+    if(!curIsAudio())sndGate=playToken;            /* 39.5: звук нового — после показанного кадра */
+    applyAudio();
+    (function(sgt){ setTimeout(function(){ sndGateDrop(sgt) },4000) })(playToken);
+    try{ applyFit() }catch(e){}                    /* фит/трансформ гарантированно на новом активном */
+    if(ok)stgHide(false);                          /* маска уходит только под предъявленный кадр */
+    dlog('свап','роли: '+((old&&old._pid)?String(old._pid).slice(0,10):'?')+' → '+((sb&&sb._pid)?String(sb._pid).slice(0,10):'?')+(ok?'':' · БЕЗ кадра — маска держится'));
+  }else stgHide(false);
+  return true;
+}
+function stgReset(){                               /* выход из плеера: маска скрыта, запасной на паузе;
+   контент скрытого плеера невидим, следующий openItem стартует со своей маски */
+  try{ if(vStandby&&vStandby!==vActive)vStandby.pause() }catch(e){}
+  stgHide(true);
 }
 async function prefetchNext(){
   try{
@@ -4947,129 +4807,23 @@ function applyAudioArt(it){
 /* пульс от музыки отключён (пока что) — анализатор в графе оставлен под будущую синхронизацию */
 var ANAL=null,FXBUF=null;
 
-/* ═══ постер: мгновенная картинка вместо чёрного экрана при входе из списка ═══ */
+/* ═══ маска v73: один слой. Чёрный или ВАЛИДНЫЙ первый кадр цели ═══
+   Валидность: data-URL, штамп версии >=73, позиция снимка <=0.05с — «первый кадр»
+   по построению (снят с элемента на паузе у нуля). Серверные миниатюры /t/ в плеере
+   не участвуют: у карточек свои <img>, в маску попадает только доказанный fframe.
+   Старт не с начала — всегда честный чёрный (правило юзера 72). */
 var posterEl=$('#poster');
-function posterSrcOf(it){        /* источник постера: первый кадр (fframe) — он совпадает с видео по аспекту и композиции.
-  Карточный thumb — лэндскейп-холст 320×180 с запечённым леттербоксом: для портретного видео он даёт
-  «портрет в лэндскейпе», поэтому у портретных остаётся ТОЛЬКО истинный fframe (24.3): раньше таким
-  видео не доставалось маски первого кадра вовсе — при открытии мигал чужой/прошлый кадр.
-  fframe отсутствует только до бэкфилла/первого открытия (снимет snapPoster) */
-  if(!it)return null;
-  if(it.fframe)return it.fframe;
-  if(it.kind==='native'&&it.thumb&&it.thumb.indexOf('data:')!==0)return it.thumb;   /* 2.4: серверный первый кадр — истинный аспект, портретным тоже годится */
-  if(it.w&&it.h&&it.h>it.w)return null;   /* портрет без fframe: лэндскейп-thumb даст неверный аспект — честный нуль */
-  return it.fthumb||it.thumb||null;
+function fframeValid(it){
+  try{ return !!(it&&!it.audio&&it.fframe&&(''+it.fframe).indexOf('data:image/')===0&&(it.fframeV||0)>=73&&(it.fframePos||0)<=0.05) }catch(e){ return false }
 }
-function openPosOf(it){           /* 69: позиция, с которой трек ОТКРОЕТСЯ (правило loadStandby):
-  resume включён и позиция осмысленная — она, иначе ноль. Постер/подложка обязаны совпадать
-  с ней: кадр «не того момента» честнее заменить чёрным — snapPoster докрутит точный */
+function openPosOf(it){           /* позиция, с которой трек ОТКРОЕТСЯ (правило sbSeek): resume включён
+  и позиция осмысленная — она, иначе ноль */
   try{ return (S.resume&&(it.position||0)>10&&it.duration&&(it.position||0)<it.duration-20)?it.position:0 }catch(e){ return 0 }
 }
-function trueAspectPoster(it,pos){/* 67: источник маски ТОЛЬКО истинного аспекта: fframe (снят с элемента —
-  композиция совпадает с видео) или серверная /t/ (первый кадр, докажет X-Plenka-FrameT).
-  Карточные thumb/fthumb — лэндскейп 320×180 с запечённым леттербоксом: вписанные в подложку/
-  постер, они торчали полями из-под играющего видео при любом несовпадении аспектов
-  («под видео видно другое») — VL-1/VL-7.
-  69: pos — ожидаемая позиция старта (openPosOf). Репорт «не тот первый кадр»: snapPoster
-  сохраняет fframe кадром RESUME-позиции (3:42), а открытие с нуля показывало его как первый.
-  Открытие не с нуля принимает ТОЛЬКО fframe этой позиции (серверный /t/ — всегда ПЕРВЫЙ кадр,
-  для resume он «не тот» — честный чёрный, snapPoster докрутит); /t/ для заглушки — px=1920:
-  карточный 320px на весь экран мылил («обложка низкого качества»)
-  70: открытие с нуля — только fframe со ШТАМПОМ ДОВЕРИЯ (fframeV=70, снят проверенным путём)
-  и ДЕЙСТВИТЕЛЬНО первого кадра (fframePos≤3). Раньше ветка принимала ЛЮБОЙ fframe:
-  в неё попадали кадры resume-позиции («с середины видео») и загрязнения окном
-  re-present («совсем другое видео»). Нет доказанного первого — честный чёрный,
-  snapPoster/fframeGrab снимут настоящий */
-  if(!it)return null;
-  /* 72: открытие НЕ с начала — кадр НЕ подставляем вовсе (правило юзера): pframe ±3с и любые
-     «похожие» кадры убраны — маска/подложка остаются честным чёрным до первого кадра самого видео */
-  if(pos!=null&&pos>0.5)return null;
-  if(it.fframe&&(it.fframeV||0)>=70&&(it.fframePos||0)<=3)return it.fframe;
-  var th=(''+(it.thumb||''));
-  if(th.indexOf('/t/')<0)return null;
-  return th.replace(/([?&])px=\d+/,'$1px=1920');
-}
-var vblankEl=$('#vblank');
-/* 55: первый ли кадр у постера? data: (fframe/fthumb — JS-снимки) — первый по построению.
-   Серверная миниатюра /t/ — спрашиваем заголовком X-Plenka-FrameT (оболочка 3.7+ отдаёт
-   мс от старта; дальние кадры помечены sentinel). Ответ кэшируется по URL. */
-var thumbFirstT={}, thumbFirstPend={};
-function posterFirstMs(src,cb){
-  if(!src){ cb(-1); return }
-  if(src.indexOf('data:')===0){ cb(0); return }
-  if(src in thumbFirstT){ cb(thumbFirstT[src]); return }
-  if((src.indexOf(NATV_BASE)!==0)&&(src.indexOf('/t/')<0)){ cb(0); return }   /* не серверная — считаем своим снимком */
-  if(thumbFirstPend[src]){ thumbFirstPend[src].push(cb); return }              /* запрос уже летит — подвешиваемся */
-  var q=[cb]; thumbFirstPend[src]=q;
-  var fin=function(ms){ var arr=thumbFirstPend[src]||[]; delete thumbFirstPend[src];
-    thumbFirstT[src]=ms; for(var i=0;i<arr.length;i++)try{arr[i](ms)}catch(e){} };
-  var ac=null;
-  try{ ac=new AbortController(); setTimeout(function(){ try{ac.abort()}catch(e){} },1200) }catch(e){}   /* 68: быстрее честный чёрный */
-  fetch(src,{cache:'force-cache',signal:ac?ac.signal:undefined}).then(function(r){
-    var ft=3600000;                                    /* нет заголовка/не JSON — считаем НЕ первым: чёрный честнее чужого кадра */
-    try{ var h=r.headers.get('X-Plenka-FrameT'); if(h!==null){ var v=+h; if(isFinite(v))ft=Math.max(0,v) } }catch(e){}
-    fin(ft)
-  },function(){ fin(3600000) })
-}
-var POSTER_FIRST_MS=250;                                /* ≤250мс от старта = «первый кадр» (лестница сервера: 0/16/50/150мс) */
-function setVblank(it){    /* 30.1: подложка на цель — первый кадр вписан в чёрный. НИКОГДА не
-  прячется и не гасится таймером: видео (z3) перекрывает её (z2) само. Нет кадра — честный
-  чистый чёрный; аудио — чистый чёрный под арт-сценой. Любой момент снятия постера открывает
-  ИДЕНТИЧНУЮ картинку — переход пик-в-пик, мигание невозможно по построению.
-  55: серверная миниатюра — только если она ДОКАЗАННО первый кадр (X-Plenka-FrameT);
-  иначе чистый чёрный: «кадр с превью, потом прыжок» больше не показываем */
-  try{
-    if(!vblankEl)return;
-    vblankEl._tok=(vblankEl._tok||0)+1; var my=vblankEl._tok;   /* 67: RC-101 — токен бампается в КАЖДОЙ ветке:
-      устаревший posterFirstMs-колбэк прежней цели больше не может нарисовать чужой кадр
-      поверх играющего (ветки null/data: раньше не бампались — колбэк проходил гвард) */
-    var src=(it&&!it.audio)?trueAspectPoster(it,openPosOf(it)):null;          /* 67: VL-1; 69: только кадр стартовой позиции */
-    dlog('подложка','setVblank '+(it?baseName(it.name):'null')+' → '+(src?((''+src).indexOf('data:')===0?('fframe '+(Math.round(src.length/1365))+'КБ (fframePos='+(it.fframePos||0)+',V='+(it.fframeV||0)+')'):'серверный /t/ (1920)'):'чёрный'));
-    if(!src){ vblankEl.style.backgroundImage=''; return }
-    if(src.indexOf('data:')===0){ vblankEl.style.backgroundImage='url("'+src+'")'; return }
-    vblankEl.style.backgroundImage='';
-    posterFirstMs(src,function(ms){
-      if(my!==vblankEl._tok)return;                    /* цель уже сменилась — чужой кадр не подставляем */
-      if(ms<=POSTER_FIRST_MS){ vblankEl.style.backgroundImage='url("'+src+'")';
-        dlog('подложка','setVblank: /t/ подтвердился как первый ('+ms+'мс) — рисую'); }
-      else dlog('подложка','setVblank: /t/ НЕ первый кадр ('+ms+'мс>'+POSTER_FIRST_MS+') — остаюсь чёрным');
-    })
-  }catch(e){}
-}
-function posterUpgrade(it,my){    /* 55: постер — только первый кадр. Вызывается ПОСЛЕ showPoster(null):
-  экран уже прикрыт честным чёрным; серверную миниатюру подставляем лишь после подтверждения */
-  try{
-    if(my!=null&&posterEl&&posterEl._own!=null&&posterEl._own!==my)return;   /* 67: RC-103 — владение открытием */
-    var ps=(!it||it.audio)?null:trueAspectPoster(it,openPosOf(it));        /* 67: VL-7; 69: кадр стартовой позиции, /t/ в 1920 */
-    if(!ps)return;
-    if(ps.indexOf('data:')===0){ showPoster(ps); return }
-    posterFirstMs(ps,function(ms){
-      if(my!=null&&(my!==playToken||(posterEl&&posterEl._own!=null&&posterEl._own!==my)))return;   /* 67: RC-103 */
-      if(ms<=POSTER_FIRST_MS)showPoster(ps);
-    })
-  }catch(e){}
-}
-var freezeEl=$('#freeze');
-function showFreeze(fromEl){          /* 27.2: маска «стоп-кадр» — независимый слой поверх обоих
-  элементов: пока новый элемент прозрачен (кадр не декодирован), под постером виден
-  ПОСЛЕДНИЙ кадр уходящего видео — не чёрное и не чужой ролик */
-  if(!freezeEl||!fromEl)return;
-  try{
-    if(!fromEl.videoWidth||fromEl.readyState<2){ hideFreeze(); return; }
-    var vw=fromEl.videoWidth,vh=fromEl.videoHeight;
-    var FSC=1920,fsc=Math.min(1,FSC/Math.max(vw,vh));   /* 68: 1920 — маска стоп-кадра не мылится на 1080p+ */
-    var c=document.createElement('canvas');
-    c.width=Math.max(2,Math.round(vw*fsc)); c.height=Math.max(2,Math.round(vh*fsc));
-    c.getContext('2d').drawImage(fromEl,0,0,c.width,c.height);
-    freezeEl.style.backgroundImage='url("'+c.toDataURL('image/jpeg',.85)+'")';
-    freezeEl.style.display='block';
-    dlog('маска','freeze: стоп-кадр уходящего '+vw+'×'+vh+' (это КАРТИНКА уходящего, не чужая — гасится при показе цели)');
-    var stg=$('#stage'); if(stg&&freezeEl.parentNode===stg)stg.appendChild(freezeEl);   /* равный z: позже в DOM — выше */
-  }catch(e){ hideFreeze(); }
-}
-function hideFreeze(){
-  if(!freezeEl)return;
-  freezeEl.style.display='none'; freezeEl.style.backgroundImage='';
+function maskSrcOf(it,startAt){    /* источник маски: только доказанный первый кадр и только для старта с нуля */
+  if(!it||it.audio)return null;
+  if((startAt==null?openPosOf(it):startAt)>0.5)return null;
+  return fframeValid(it)?it.fframe:null;
 }
 function showPoster(url){
   if(!posterEl)return;
@@ -5164,33 +4918,7 @@ async function fhPermSweep(){                      /* 33.1: после пере�
     }
   }catch(e){}
 }
-function hidePosterSoon(){          /* точный момент — первый реально ПОКАЗАННЫЙ кадр */
-  var done=false, tok=playToken, el=vActive;
-  function fin(){ if(done)return; done=true; hidePoster(false); sndGateDrop(tok); }   /* 39.5: превью погасло — звук можно */
-  function gone(){ return tok!==playToken||el!==vActive; }   /* 28.1: экраном владеет более новое открытие — постер не наш, не трогаем */
-  /* 28.2: «декодирован» (readyState>=2) и «показан» — разные вещи: на реальном железе
-     между ними аппаратный конвейер. Гасить постер по декоду значило оголять ЧЁРНЫЙ экран
-     между постером и стартом видео (регрессия 28.1). Теперь требуем факта презентации:
-     totalVideoFrames>0 (кадр уже был показан, в т.ч. кадр сика) — ровно тот же сигнал,
-     которым swapRoles снимает маски. rVFC — презентация сейчас; ошибки/нет src — маска не нужна */
-  var paintedEl=function(elq){ return frameProof(elq) };   /* 31.3: эпоха, не голый счётчик */
-  if('requestVideoFrameCallback' in el){ try{ (function pvHid(){ el.requestVideoFrameCallback(function(md){   /* 68→69: гвард чужого кадра */
-    if(gone())return; if(!pvOk(el,md)){ pvHid(); return } fin() }) })() }catch(e){} }
-  clearTimeout(posterEl._t);
-  (function poll(n){                  /* 28.1: слепой кап 3с и был багом: постер — маска задержки
-    загрузки, снимаем его только по подтверждению кадра; rVFC у элемента, поставленного на
-    паузу (прогрев), не срабатывает — потому опрос (300мс) по живым признакам кадра */
-    posterEl._t=setTimeout(function(){
-      if(done||gone())return;
-      if(el.error||(!el.src&&!el.currentSrc)){ fin(); return; }   /* умер — маска не нужна */
-      if(el.readyState>=2&&!el.seeking&&el.videoWidth>0
-        &&el.style.visibility!=='hidden'&&paintedEl(el)){ fin(); return; }   /* кадр не просто декодирован — ПОКАЗАН */
-      if(n>40)return;                  /* ~6с абс. страховка (68: такт 150мс — постер гаснет раньше): дальше постер — осознанная маска */
-      poll(n+1);
-    },150);
-  })(0);
-}
-
+/* 73: hidePosterSoon удалён — маску снимает только stgSwapPlay после предъявленного кадра. */
 /* ═══ бенчмарк: старт из списка и склейка перехода ═══ */
 var PERF={log:[],sum:null,_endedT:null,_openT:0,_idx:-1,_instant:false,_endT0:null};
 function perfOpen(idx,instant){
@@ -5220,119 +4948,28 @@ function perfSwap(){
   setTimeout(fin,3000);
 }
 
-function snapPoster(it){           /* кадр с запасного элемента ровно на стартовой позиции: постер докручивается
-   до реального кадра ещё до склейки (бесшовный переход при resume), кэш fframe обновляется —
-   следующее открытие маскируется точным кадром. Фоновый: sbSeek для видео не ждёт кадр (rs=1 после
-   seeked) — догоняем readyState≥2 poll'ом (кап 480мс), склейку не блокируем; ссылку на элемент
-   захватываем — после swap vStandby уже чужой. Не успели до скрытия постера — кэш всё равно согрет
-   70: ЗАПИСЬ В КЭШ ТОЛЬКО ПОДЛИННОГО КАДРА. Элемент только что перезаряжен — в окне re-present
-   drawImage снимает буфер ПРОШЛОЙ загрузки; раньше этот снимок писался в it.fframe и ЖИЛ В IDB
-   вечно («кадр совсем другого видео» на постере/подложке). Теперь: снимок сравнивается с
-   до-перезарядным (_preFrame) — совпал с ним = чужой, ждём живой декод (микро-сики раскачивают
-   декодер); записывается только проверенный кадр со штампом fframeV=70 */
+/* ═══ ffSnapLive v73: бесплатный точный первый кадр при открытии ═══
+   Вызывается из sbSeek: элемент на ПАУЗЕ, доведён до стартовой позиции (обычно 0),
+   кадр декодирован (readyState>=2), элемент скрыт. drawImage читает декодер
+   детерминированно — не композитор. Играющие/догоняющие элементы для снимков
+   запрещены архитектурно: путаницу кадров 70-72 рождал snapPoster-late, снимавший
+   кадр с УЖЕ ИГРАЮЩЕГО видео (0.1-0.3с — визуально «не первый»). */
+function ffSnapLive(it,el){
   try{
-    var tgtP=openPosOf(it)||0;
-    if(tgtP>0.5){ dlog('кадр','snapPoster: пропуск — старт не с начала ('+tgtP.toFixed(1)+'с), кадр не подставляем (72) — '+baseName(it.name)); return; }
-    var sb=vStandby, myTok=playToken;
-    if(!sb||sb._pid!==it.id||sb.error){
-      var spw=sb?('pid '+(sb._pid===it.id?'наш':'чужой')):'нет';
-      dlog('кадр','snapPoster: отмена (элемент '+spw+', err='+(sb&&sb.error?'да':'нет')+') — '+baseName(it.name)); return; }
-    /* 72: детерминированный снимок ПЕРВОГО кадра: элемент ставится ровно на стартовую позицию,
-       ждём seeked (доверенный паттерн fframeGrab) — и только тогда drawImage */
-    function finB(){
-      try{
-        if(myTok!==playToken||sb.error||sb._pid!==it.id||sb===vActive)return;
-        if(sb.readyState<2||!sb.videoWidth)return;
-        var vw2=sb.videoWidth,vh2=sb.videoHeight,FSC2=1920,fsc2=Math.min(1,FSC2/Math.max(vw2,vh2));
-        var c2=document.createElement('canvas'); c2.width=Math.max(2,Math.round(vw2*fsc2)); c2.height=Math.max(2,Math.round(vh2*fsc2));
-        c2.getContext('2d').drawImage(sb,0,0,c2.width,c2.height);
-        var url2=c2.toDataURL('image/jpeg',.85), pos2=sb.currentTime||0;
-        if(posterEl&&!posterEl.hidden)posterEl.style.setProperty('--pi','url("'+url2+'")');
-        try{ vblankEl._tok=(vblankEl._tok||0)+1 }catch(eT2){}
-        if(vblankEl)vblankEl.style.backgroundImage='url("'+url2+'")';
-        if(!it.fframe||(it.fframePos||0)>0.15||Math.abs((it.fframePos||0)-pos2)>0.05){
-          it.fframe=url2; it.fframePos=pos2; it.fframeV=70; it._pd=true;
-          if(it.kind!=='memory')persistItem(it);
-          dlog('кадр','snapPoster: fframe ← ПЕРВЫЙ кадр (сик на старт) '+pos2.toFixed(2)+'с '+vw2+'×'+vh2+' V=70 — '+baseName(it.name));
-        } else dlog('кадр','snapPoster: fframe уже точный ('+((it.fframePos||0).toFixed(2))+'с) — не перезаписываю — '+baseName(it.name));
-      }catch(e){}
+    if(!it||it.audio||!el||el.error)return;
+    if(el.videoWidth>0&&el.readyState>=2&&!el.seeking&&(el.currentTime||0)<=0.06&&!fframeValid(it)){
+      var FSC=1920,fsc=Math.min(1,FSC/Math.max(el.videoWidth,el.videoHeight));
+      var c=document.createElement('canvas');
+      c.width=Math.max(2,Math.round(el.videoWidth*fsc)); c.height=Math.max(2,Math.round(el.videoHeight*fsc));
+      c.getContext('2d').drawImage(el,0,0,c.width,c.height);
+      it.fframe=c.toDataURL('image/jpeg',.85);
+      it.fframePos=Math.max(0,el.currentTime||0); it.fframeV=73; it._pd=true;
+      if(!it.w){ it.w=el.videoWidth; it.h=el.videoHeight; }
+      persistItem(it); renderSoon();
+      dlog('кадр','ffSnapLive: первый кадр '+el.videoWidth+'×'+el.videoHeight+' t='+(el.currentTime||0).toFixed(2)+'с V=73 — '+baseName(it.name));
     }
-    var tries=0, staleN=0, pos0=-1, late=false;
-    (function poll(){
-      try{
-        if(myTok!==playToken||sb.error||sb._pid!==it.id){   /* 66: токен открытия + цель — чужой кадр не пишем в постер/подложку */
-          dlog('кадр','snapPoster: прерван (токен/цель сменились) — '+baseName(it.name)); return; }
-        if(sb===vActive){   /* 67: склейка уже произошла — экран (постер/подложка) трогать запрещено:
-          поздняя докрутка закрашивала подложку кадром позиции на весь сеанс трека.
-          70: КЭШ fframe при этом пишем (проверенный кадр этого же элемента — ценен для
-          следующих открытий), только без покраски; LASTREF тоже не трогаем */
-          if(sb.readyState>=2&&sb.videoWidth){
-            var cL=capFrame(sb),dL=sb._preFrame?frameDiff(cL,sb._preFrame):-2;
-            if(dL>=0&&dL<1.5){ if(++staleN>8){ dlog('кадр','snapPoster(late): застывший буфер — fframe НЕ пишу ('+baseName(it.name)+')'); return; } setTimeout(poll,130); return; }
-            else{
-              var vwL=sb.videoWidth,vhL=sb.videoHeight,FSL=1920,fsl=Math.min(1,FSL/Math.max(vwL,vhL));
-              var cN=document.createElement('canvas'); cN.width=Math.max(2,Math.round(vwL*fsl)); cN.height=Math.max(2,Math.round(vhL*fsl));
-              cN.getContext('2d').drawImage(sb,0,0,cN.width,cN.height);
-              var uL=cN.toDataURL('image/jpeg',.85), pL=sb.currentTime||0;
-              /* 72: fframe — только действительно ПЕРВЫЙ кадр. Играющий элемент уехал от нуля:
-                 снимок позднее 0.5с — кадр середины, НЕ пишем (переснимет fframeGrab). Близкий
-                 кадр пишем только если он БЛИЖЕ К НУЛЮ кэша: раньше «diff>3» оставлял отраву
-                 0.6/1.4с и блокировал точный кадр («совпадает — не перезаписываю») */
-              if(pL>0.5){ dlog('кадр','snapPoster(late): кадр позиции '+pL.toFixed(2)+'с в fframe НЕ пишу (не первый — переснимет fframeGrab) — '+baseName(it.name)); }
-              else if(!it.fframe||(it.fframePos||0)>0.15||pL<((it.fframePos||0)-0.02)){ it.fframe=uL; it.fframePos=pL; it.fframeV=70; it._pd=true;
-                if(it.kind!=='memory')persistItem(it);
-                dlog('кадр','snapPoster(late): fframe ← первый кадр '+pL.toFixed(2)+'с '+vwL+'×'+vhL+' V=70 (экран не трогаю) — '+baseName(it.name)); }
-              else dlog('кадр','snapPoster(late): fframe уже точный ('+((it.fframePos||0).toFixed(2))+'с) — не перезаписываю — '+baseName(it.name));
-            }
-          }
-          else if(++tries<=20){ setTimeout(poll,60); }   /* late-догон: играющий элемент вот-вот выдаст кадр */
-          return;
-        }
-        if(sb.readyState<2||!sb.videoWidth){               /* кадр ещё не декодирован — короткий догон */
-          if(++tries>12){ dlog('кадр','snapPoster: кадр не декодировался за догон — эталона нет ('+baseName(it.name)+')'); return; }
-          setTimeout(poll,40); return;
-        }
-        if(pos0<0)pos0=sb.currentTime||0;
-        var cap=capFrame(sb);
-        if(!cap){ dlog('кадр','snapPoster: снимок не удался (tainted?) — эталона нет ('+baseName(it.name)+')'); return; }
-        var dpre=sb._preFrame?frameDiff(cap,sb._preFrame):-2;   /* -2: сравнивать не с чем (первая загрузка элемента) */
-        if(dpre>=0&&dpre<1.5){                             /* 70: композитор всё ещё показывает буфер прошлой загрузки */
-          if(++staleN>8){ dlog('кадр','snapPoster: застывший чужой буфер держится '+staleN+' проверок — fframe НЕ пишу ('+baseName(it.name)+')'); return; }
-          dlog('кадр','snapPoster: на элементе кадр ПРОШЛОЙ загрузки (diff '+dpre+') — жду живой декод '+staleN+'/8 ('+baseName(it.name)+')');
-          try{ sb.currentTime=Math.min(pos0+0.05+0.06*staleN,(sb.duration||1e9)-0.1); }catch(eN){}   /* микро-сик: живой декодер выдаст новый кадр, застывший буфер не сдвинется */
-          setTimeout(poll,130); return;
-        }
-        /* 72: после проверки живого декода элемент мог уехать от старта (микро-сики против
-           застывшего буфера) — возвращаем РОВНО на стартовую позицию, снимок сделает finB */
-        var tgtB=openPosOf(it)||0;
-        if(Math.abs((sb.currentTime||0)-tgtB)>0.02){
-          try{ sb.pause() }catch(eP9){}
-          try{ sb.currentTime=tgtB }catch(eS9){}
-          try{ once(sb,'seeked',1200).then(finB,finB) }catch(eW9){ setTimeout(finB,80) }
-          return;
-        }
-        var vw=sb.videoWidth,vh=sb.videoHeight;
-        var FSC=1920, fsc=Math.min(1,FSC/Math.max(vw,vh));   /* 68: 1920 — постер/подложка в истинном разрешении экрана */
-        var c=document.createElement('canvas'); c.width=Math.max(2,Math.round(vw*fsc)); c.height=Math.max(2,Math.round(vh*fsc));
-        c.getContext('2d').drawImage(sb,0,0,c.width,c.height);
-        var url=c.toDataURL('image/jpeg',.85), pos=sb.currentTime||0;
-        if(posterEl&&!posterEl.hidden)posterEl.style.setProperty('--pi','url("'+url+'")');
-        try{ vblankEl._tok=(vblankEl._tok||0)+1 }catch(eT9){}          /* 67: VL-8/RC-101 — кадр позиции свежее
-          pending-fetch setVblank: инвалидируем его колбэк, пик-в-пик не перебивается кадром 0:00 */
-        if(vblankEl)vblankEl.style.backgroundImage='url("'+url+'")';   /* 30.1: подложка докручивается
-          синхронно с постером — снятие постера открывает идентичную картинку (пик-в-пик) */
-        var isNew=!it.fframe||(it.fframePos||0)>0.15||Math.abs((it.fframePos||0)-pos)>0.05;   /* 72: перезаписываем
-          и отраву (>0.15с), и заметно сдвинутый кадр (>0.05с) — детерминированный снимок авторитетен */
-        if(isNew){ it.fframe=url; it.fframePos=pos; it.fframeV=70; it._pd=true;   /* 70: штамп доверия —
-          «снят проверенным путём с этого файла после подтверждения живого декода» */
-          if(it.kind!=='memory')persistItem(it);
-          dlog('кадр','snapPoster: fframe ← ПЕРВЫЙ кадр '+pos.toFixed(2)+'с '+vw+'×'+vh+' V=70 '+(Math.round(url.length/1365))+'КБ (до-перезарядный diff '+dpre+') — '+baseName(it.name)); }
-        else dlog('кадр','snapPoster: fframe уже точный ('+((it.fframePos||0).toFixed(2))+'с) — не перезаписываю ('+baseName(it.name)+')');
-      }catch(e){}
-    })();
   }catch(e){}
 }
-
 /* ═══ бэкфилл fframe: у КАЖДОГО видео — скрытый дамми-кадр первого кадра (истинный аспект).
    Для карточек, импортированных до введения fframe, и проб, где snapPoster не успел.
    Один файл за шаг (2.5: пауза между шагами 700мс — фон не выгребает I/O при тапах);
@@ -5368,19 +5005,14 @@ function ffReviveSweep(){
     for(var i=0;i<items.length;i++){
       var it=items[i];
       if(!it||it.audio)continue;
-      /* 72: планка отравления 3с → 0.15с: поздние снимки играющего элемента (0.56/0.61/1.37с)
-         визуально НЕ первые — в fframe им места нет. pframe упразднён (правило «не с начала —
-         без кадра»), отравленный ключ чистится — первый кадр переснимут probe/fframeGrab/snapPoster */
-      if(it.fframe&&(it.fframePos||0)>0.15){
+      /* 73: ВЕСЬ кэш до v73 — под нож безусловно (v70-v72 писали кадры с играющего элемента:
+         0.29с/0.56с/1.37с — «не тот первый кадр»). Валидны только штамп V>=73 и позиция <=0.05с.
+         Переснимут probe/fframeGrab/ffSnapLive — все три снимают ТОЛЬКО паузу у нуля */
+      if(it.fframe&&((it.fframeV||0)<73||(it.fframePos||0)>0.05)){
         it.fframe=null; it._pd=false; try{ idbDel('prev',it.id) }catch(e){} n++; if(it.kind!=='memory')persistItem(it); continue;
       }
       if(!it.fframe||(''+it.fframe).indexOf('data:image/')!==0||it._ffRev)continue;
       it._ffRev=1;                              /* один раз за сессию — регенерация не зациклится */
-      /* 70: обложки БЕЗ ШТАМПА ДОВЕРИЯ (fframeV<70) — под нож безусловно: они сняты
-         кодом, который доверял первому кадру с перезаряженного элемента (окно re-present
-         → в кэш попадали кадры ЛЮБЫХ прошлых роликов — «кадр совсем другого видео»).
-         Переснимутся проверенным путём (probe/fframeGrab/snapPoster со штампом). */
-      if((it.fframeV||0)<70){ it.fframe=null; it._pd=false; try{ idbDel('prev',it.id) }catch(e){} n++; continue; }
       var dm=jpgDims(it.fframe); if(!dm||!dm.w)continue;
       var fMax=Math.max(dm.w,dm.h);
       if(it.w&&it.h){                           /* размер источника известен — план 1920 (или сам источник) */
@@ -5411,7 +5043,11 @@ function fframeKick(){
   if(ffBusy)return; ffBusy=true;
   (function step(){
     try{
-      if(document.hidden||!player.hidden||MINI.mode!=='off'){ setTimeout(step,4000); return; }
+      if(document.hidden){ setTimeout(step,4000); return; }
+      /* 73: открытый плеер не стопорит бэкфилл навсегда (репорт: «в начале вообще нет первых
+         кадров, появляются только после проигрываний»): работаем, пока активное видео на паузе —
+         декодер свободен; на игре — ждём, I/O-конкуренции нет */
+      if(!player.hidden&&vActive&&!vActive.paused){ setTimeout(step,2000); return; }
       var it=null;
       for(var k=0;k<items.length;k++){ var x=items[k];
         if(x&&!x.audio&&!x.fframe&&x.status==='ok'&&x.duration>0&&x.kind!=='memory'&&!ffFail[x.id]
@@ -5433,15 +5069,16 @@ async function fframeGrab(it){
         v.onerror=function(){rej(new Error('meta'))};
         setTimeout(function(){rej(new Error('t'))},8000); v.src=u; });
       if(!v.videoWidth){ ffFail[it.id]=1; return; }
-      v.currentTime=0.04;
+      v.currentTime=0.02;
       await new Promise(function(res,rej){ v.onseeked=res;
         v.onerror=function(){rej(new Error('seek'))};
         setTimeout(function(){rej(new Error('t'))},6000); });
+      var fcPos=Math.max(0,v.currentTime||0);   /* 73: фактическая позиция после сика — в штамп */
       var FSC=1920, fsc=Math.min(1,FSC/Math.max(v.videoWidth,v.videoHeight));   /* 68: 1920 — бэкфилл того же качества, что и проба */
       var c=document.createElement('canvas');
       c.width=Math.max(2,Math.round(v.videoWidth*fsc)); c.height=Math.max(2,Math.round(v.videoHeight*fsc));
       c.getContext('2d').drawImage(v,0,0,c.width,c.height);
-      it.fframe=c.toDataURL('image/jpeg',.85); it.fframePos=0; it.fframeV=70; it._pd=true;   /* 70: свежий элемент — снимок подлинный, штамп */
+      it.fframe=c.toDataURL('image/jpeg',.85); it.fframePos=fcPos; it.fframeV=73; it._pd=true;   /* 73: свежий элемент на паузе у нуля — штамп v73, позиция фактическая */
       if(!it.w){ it.w=v.videoWidth; it.h=v.videoHeight; }
       if(nU&&!it.thumb&&it.duration>0){                  /* native: превью карточки (320×180) тем же элементом — дальний seek 10% */
         try{
@@ -5457,7 +5094,7 @@ async function fframeGrab(it){
         }catch(e2){}
       }
       thumbRev++; persistItem(it); renderSoon();
-      dlog('обложка','fframeGrab: готов первый кадр ('+v.videoWidth+'×'+v.videoHeight+', '+Math.round((''+it.fframe).length/1365)+'КБ, V=70) — '+baseName(it.name));
+      dlog('обложка','fframeGrab: готов первый кадр ('+v.videoWidth+'×'+v.videoHeight+', '+Math.round((''+it.fframe).length/1365)+'КБ, V='+((it.fframeV||0))+' pos='+(it.fframePos||0).toFixed(2)+'с) — '+baseName(it.name));
       if(nU)metaAsync(it,nativeFile(it));                 /* native: теги/встроенная обложка — Range-слайсами псевдо-файла */
     }catch(e){ if(!v||!v._ffAb)ffFail[it.id]=1; if(!(v&&v._ffAb))dlog('обложка','fframeGrab: НЕ вышел ('+((e&&e.message)||'?')+') — '+baseName(it.name)); }   /* 2.5: прерывание тапом — НЕ провал файла */
     finally{ if(FF.el===v){ FF.el=null; FF.id=null }
@@ -6911,23 +6548,14 @@ async function openItem(idx,opts){
   var wasPrevPlaying=!vActive.paused;       /* 65: помним, был ли прошлый трек играющим */
   if(wasPrevPlaying)quietPause(vActive);   /* 23.1/26.2: старый звук глушим сразу и ТИХО —
     пауза открытия не поднимает панель (вспышка UI на старте свайпнутого видео) */
-  setVblank(it);                           /* 30.1: подложка сразу на цель. freeze в переходе отменён:
-                                            его стоп-кадр и был «кадром прошлого видео». Теперь под новым
-                                            видео непрозрачный чёрный с вписанным первым кадром цели —
-                                            старое видео (z1) не видно в принципе, гонки таймингов
-                                            безразличны: под постером и под видео одна и та же картинка */
-  try{ posterEl._own=my }catch(eP0){}              /* 67: RC-103 — постер принадлежит этому открытию: колбэк
-    упавшей/перебитой цели не поднимет кадр над возобновлённым треком */
-  try{ var msk=trueAspectPoster(it,openPosOf(it)); NJ('open','маска: постер='+(msk?('есть ('+(((''+msk).indexOf('/t/')===0)?'миниатюра /t':'первый кадр')+')'):(openPosOf(it)>0.5?'чёрный (старт не с начала — без кадра)':'чёрный'))+
+  stgMask(it,openPosOf(it));               /* 73: одна маска на цель — чёрный или доказанный первый кадр (старт с нуля).
+                                            Под ней старый кадр: уходящее видео не скрывается до самого свапа */
+  try{ NJ('open','маска: '+(maskSrcOf(it,openPosOf(it))?'первый кадр (fframe v73)':'чёрный')+
     ' | act='+((vActive&&vActive._pid)||'-')+' rs='+((vActive&&vActive.readyState)||'-')+
-    ' | sb='+((vStandby&&vStandby._pid)||'-')+' rs='+((vStandby&&vStandby.readyState)||'-')) }catch(eM){}   /* 49: репорт
-    «первое открытие 4К показывает кадр соседа» — слой-виновник будет виден в следующем дампе */
+    ' | sb='+((vStandby&&vStandby._pid)||'-')+' rs='+((vStandby&&vStandby.readyState)||'-')) }catch(eM){}
   if(!instant){
-    /* картинка не гаснет: активный держит кадр, постер показывает цель (если есть чем) */
-    if(!it.audio){ showPoster(null); posterUpgrade(it,my); }   /* 55: чёрная маска сразу (31.4:
-        уходящий кадр прикрыт), серверный кадр — только после подтверждения «первый»;
-        чужой/дальний кадр с прыжком на видео больше не показываем */
-    else hidePoster(true);
+    /* 73: маска уже стоит на цели (stgMask выше) — синхронно, без подтверждений и апгрейдов */
+    if(it.audio)stgHide(true);
     var lsOut={};                                    /* 66: причина отказа этого вызова — своя (out), не глобальная */
     var ok=await loadStandby(it,my,lsOut);
     if(!ok&&fileErr==='NotAllowedError'&&my===playToken){
@@ -6947,19 +6575,13 @@ async function openItem(idx,opts){
           журнал живёт строками состояния; ожил — доводим позицию и входим как обычно */
       }
     }
-    if(my!==playToken)return;                      /* постером владеет более новый openItem — гасить чужой нельзя:
-      иначе до склейки виден кадр прошлого видео («кадр одной, звук другой») */
+    if(my!==playToken)return;                      /* 73: экраном владеет более новый openItem — его маска */
     if(!ok&&((lsOut.why||lsWhy)==='abort'||(lsOut.why||lsWhy)==='race')){   /* 62: перебито/отменено — HUD рисует по факту */
-      if(hudHoldId===(it&&it.id))hudHoldId=null;   /* 66: гасим только СВОЙ hold — race-выход больше не мигает чужим HUD */
-      try{ posterEl._own=null }catch(eO1){}        /* 67: RC-103 — pending-колбэк постера этой цели гасим */
-      try{ hidePoster(true) }catch(eP1){}          /* 67: VL-4 — маска/кадр недооткрытой цели не висит над возобновлённым треком */
-      try{ hideFreeze() }catch(eF1){}              /* 67: VL-4 */
+      if(hudHoldId===(it&&it.id))hudHoldId=null;   /* 66: гасим только СВОЙ hold */
       try{ var cR0=-1; for(var qR0=0;qR0<items.length;qR0++)if(vActive._pid&&items[qR0]&&items[qR0].id===vActive._pid){cR0=qR0;break}
-        currentIdx=cR0>=0?cR0:prevIdx;   /* 66: preheat-гонка не оставляет currentIdx на неиграющем */
-        var rIt0=(cR0>=0&&items[cR0])?items[cR0]:((prevIt&&!prevIt._dead)?prevIt:null);   /* 67: RC-102 — по факту играющему */
-        setVblank(rIt0) }catch(eV0){}   /* 66→67: открытие мертво (токен наш — это не новый openItem):
-        маска возвращается к возобновлённому треку — кадр недооткрытой цели больше не торчит
-        в леттербоксе играющего («под видео видно другое») */
+        currentIdx=cR0>=0?cR0:prevIdx; }catch(eV0){}   /* 66: currentIdx — к фактически играющему */
+      stgHide(true);                               /* 73: маска недооткрытой цели не висит: возобновлённый трек
+        никуда не прятался — под маской он и стоит, чужих слоёв больше нет */
       return; }   /* 24.4: перебито другим открытием/прогревом — не ошибка */
     if(!ok){
       hudHoldId=null;                            /* 62: не открылось — панель показывает реальность активного */
@@ -6974,11 +6596,7 @@ async function openItem(idx,opts){
       try{ applyAudio(); applyFilters(); applyFit() }catch(e){}   /* 33.1: неудача — старый трек снова слышим: mute был служебным */
       try{ if(wasPrevPlaying&&vActive._pid&&(!it||it.id!==vActive._pid))vActive.play() }catch(eP){}   /* 65: не оставляем
         уходящий трек замороженным кадром без звука — возвращаем то, что играло до неудачного открытия */
-      try{ posterEl._own=null }catch(eO2){}   /* 67: RC-103 — pending-колбэк постера упавшей цели гасим */
-      hidePoster(true); hideFreeze();
-      try{ setVblank((cR>=0&&items[cR])?items[cR]:((prevIt&&!prevIt._dead)?prevIt:null)) }catch(eV1){}   /* 66→67: подложка — на ФАКТИЧЕСКИ играющий трек
-        (его кадр той же геометрии, что и возобновляемое видео): кадр упавшей цели не торчит
-        в леттербоксе возобновлённого воспроизведения при другом aspect ratio */
+      stgHide(true);                               /* 73: возобновлённый трек сразу виден — под маской он и был */
       if((lsOut.why||lsWhy)==='gone'){                          /* 2.5: файл недоступен на устройстве — честно и сразу;
         карточку уберёт фоновый перескан (merge видит «исчезло») */
         toast(t('natvOpenGone'),'err');
@@ -6992,30 +6610,28 @@ async function openItem(idx,opts){
         if(f0){ pendingPerm=f0; $('#fbText').textContent=t('fbNeed',{d:f0.name}); }
       }
       return; }
-    if(ok&&!it.audio&&my===playToken)snapPoster(it);   /* постер/кэш — ровно стартовый кадр до склейки */
+    /* 73: снимок первого кадра уже сделан детерминированно (ffSnapLive внутри sbSeek —
+       элемент был на паузе ровно на нуле; снимков с играющего видео больше нет) */
   }else{
-    /* 25.8: постер прошлого открытия ещё на экране — резкое скрытие оголяет замерший
-       кадр СТАРОГО видео (видели «новое → старое → новое» при быстрых тапах).
-       Обновляем картинку на цель и прячем по первому кадру нового (hidePosterSoon) */
-    if(!it.audio&&!posterEl.hidden){ showPoster(null); posterUpgrade(it,my); }   /* 55: без кадра цели постер остаётся чёрной маской над уходящим кадром */
-    else hidePoster(true);
+    /* 73: маска уже на цели (stgMask выше); прогретый элемент скрыт и стоит на нужной
+       позиции — досмотр при необходимости в невидимости, кадр появится под своей маской */
+    if(it.audio)stgHide(true);
     warmStandby(vStandby);
-    /* прогрев мог держать кадр не там, где сейчас нужно продолжать: досматриваем до склейки */
     var want=0;
     if(S.resume){ var sd2=vStandby.duration;
       if(it.position>10&&isFinite(sd2)&&sd2>0&&it.position<sd2-20)want=it.position; }
     if(Math.abs((vStandby.currentTime||0)-want)>1.5){
-      if(!it.audio){ showPoster(null); posterUpgrade(it,my); }   /* 55: досмотр прикрывает честный чёрный, дальний кадр не подставляем */
       vStandby._seekDone=false;
       try{ vStandby.currentTime=want }catch(e){}
       try{ await once(vStandby,'seeked',8000) }catch(e){}
       if(my!==playToken)return;
       vStandby._seekDone=true;
-      if(!it.audio)snapPoster(it);        /* instant+досмотр: постер тоже докручивается до кадра стартовой позиции */
+      if(!it.audio&&(vStandby.currentTime||0)<=0.06)ffSnapLive(it,vStandby);   /* 73: досмотр привёл в ноль — снимаем тут же, пока пауза */
     }
   }
   if(my!==playToken)return;
-  swapRoles();                                   /* кадр уже раскодирован — чёрной вспышки нет */
+  await stgSwapPlay(my);                         /* 73: кадр предъявлен в невидимости → свап → маска уходит */
+  if(my!==playToken)return;
   perfSwap();
   if(keepMini&&MINI.mode==='local'){             /* мини-панель остаётся на экране: новый трек в ней же */
     MINI.item=it; miniTitle.textContent=fileNameOf(it);
@@ -7034,7 +6650,6 @@ async function openItem(idx,opts){
   }
   $('#tDur').textContent=fmtT(video.duration);   /* метаданные уже были — слушатель loadedmetadata не придёт */
   renderBufs();                                  /* полосы буфера нового активного */
-  hidePosterSoon();
   if(S.resume&&it.position>10&&isFinite(video.duration)&&it.position<video.duration-20)
     toast(t('resuming',{x:fmtT(it.position)}));
   if(opts.autoplay!==false){
@@ -7206,12 +6821,7 @@ VOn('seeking',function(){
 });
 VOn('waiting',function(){ $('#loadDot').classList.add('on') });
 VOn('playing',function(){
-  $('#loadDot').classList.remove('on');
-  if(posterEl&&!posterEl.hidden){                    /* 27.2: слепой кап 800мс убран — на реальном декоде
-    кадра ещё не было, постер оголял чёрное/старый кадр. Маска-стоп-кадр держит экран,
-    скрытие — строго по первому показанному кадру (hidePosterSoon, страх. кап 3с) */
-    hidePosterSoon();
-  }
+  $('#loadDot').classList.remove('on');   /* 73: маску снимает только stgSwapPlay (по предъявленному кадру) */
 });
 VOn('seeked',function(){
   clearTimeout(seekSpinT); try{ $('#loadDot').classList.remove('on') }catch(e){}   /* 55: перемотка закончилась — гасим спиннер */
@@ -8224,12 +7834,8 @@ function applyFilters(){
      пути композиции Chrome (оверлеи) → мыло/«пиксельность» и микрофризы на телефоне */
   var fl=(S.bright===1&&S.contrast===1&&S.sat===1)?'':'brightness('+S.bright+') contrast('+S.contrast+') saturate('+S.sat+')';
   eachV(function(el){ if(el.style.filter!==fl)el.style.filter=fl });
-  /* 37.5: превью-кадры (постер над видео, подложка под ним, стоп-кадр) — та же
-     картинка, что и видео: фильтр применяется и к ним, иначе «первый кадр при
-     открытии ярче/бледнее, чем видео после старта». Гарды: слоёв может не быть */
+  /* 37.5→73: фильтр на маске — та же картинка, что и видео (иначе «первый кадр ярче видео») */
   try{ if(posterEl&&posterEl.style.filter!==fl)posterEl.style.filter=fl }catch(e){}
-  try{ if(vblankEl&&vblankEl.style.filter!==fl)vblankEl.style.filter=fl }catch(e){}
-  try{ if(freezeEl&&freezeEl.style.filter!==fl)freezeEl.style.filter=fl }catch(e){}
   grainEl.style.opacity=S.grain;
   grainEl.classList.toggle('on',S.grain>0);   /* анимация зерна — только когда оно видно */
 }
@@ -8510,7 +8116,7 @@ function hideMini(){
 function enterMini(){
   var it=items[currentIdx]; if(!it||!video.src)return;
   MINI.mode='local'; MINI.item=it;
-  exitFS(); hidePoster(true); hideFreeze(); stopHud(); disengageBoost();
+  exitFS(); stgHide(true); stopHud(); disengageBoost();   /* 73: маска скрыта — элементы в мини/списке без чужих слоёв */
   player.hidden=true; $('#lib').hidden=false;
   miniBar.classList.remove('remote');
   miniTitle.textContent=fileNameOf(it);
@@ -8570,9 +8176,7 @@ function updMiniRemote(){
 function stopMini(stopPlayback){
   if(MINI.mode==='local')dockVideos();
   if(stopPlayback&&MINI.mode==='local'){ try{ pause() }catch(e){} savePos(true);
-    try{ setVblank(null) }catch(e){}                  /* 63: крестик мини — тот же выход, что «вниз» из
-    try{ hideFreeze() }catch(e){}                        плеера: подложка/маска/постер не должны оставлять
-    try{ hidePoster(true) }catch(e){}                    кадр прошлого видео под следующим открытием */
+    stgHide(true);                                   /* 63→73: маска не должна остаться над следующим открытием */
   }   /* 59: обёртка —
      сырая пауза оставляла bgLive=true: сторож фона «оживлял» уже закрытое юзером видео */
   PIP.silent=true;                                 /* 26.5a: панель остановлена намеренно */
@@ -8709,7 +8313,7 @@ function applyLibSync(m){
           for(var q2=0;q2<items.length;q2++){ var w2=items[q2],p2=pm[w2.id];
             if(!p2)continue;
             if(p2.thumb&&!w2.thumb)w2.thumb=p2.thumb;
-            if(p2.fframe&&(p2.fframeV||0)>=70&&!w2.fframe){ w2.fframe=p2.fframe; w2.fframeV=p2.fframeV; }   /* 70: из prev — только СО ШТАМПОМ доверия (загрязнения старых версий не возвращаются) */
+            if(p2.fframe&&(p2.fframeV||0)>=73&&(p2.fframePos||0)<=0.05&&!w2.fframe){ w2.fframe=p2.fframe; w2.fframeV=p2.fframeV; w2.fframePos=p2.fframePos; }   /* 73: из prev — только со штампом v73 и позицией первого кадра (всё, что снято раньше v73 — под нож безусловно) */
             if(p2.fthumb&&!w2.fthumb)w2.fthumb=p2.fthumb;
             if(p2.mcover&&!w2.mcover)w2.mcover=p2.mcover; }
           return added;
@@ -8839,9 +8443,8 @@ function closePlayerView(opts){
   }
   exitFS(); pipClose(true);                        /* 26.5a: стоп — окно закрываем без авто-resume */
   pause(); savePos(true); playToken++; currentIdx=-1; disengageBoost();
-  natvWakePip();                                  /* native 2.0: ничего не играет — PiP/вake больше не нужны */
-  try{ if(vStandby&&vStandby!==vActive)vStandby.pause() }catch(e){}
-  autoAdv=false; hidePoster(true); hideFreeze(); setVblank(null);   /* 30.1: чистый чёрный на следующий вход */
+  natvWakePip();                                  /* native 2.0: ничего не играет — PiP/wake больше не нужны */
+  autoAdv=false; stgReset();                       /* 73: маска скрыта, запасной на паузе; скрытый плеер ничего не показывает */
   stopHud();
   player.hidden=true; $('#lib').hidden=false; applyAudioArt(null); renderLib(); sweepDeleted(); fframeKick();
   syncPost({t:'bye'}); REMOTE=null; if(MINI.mode!=='off')hideMini();
@@ -9004,7 +8607,7 @@ function attachMirrorStream(srcEl){
     clearInterval(MIRROR.tick); MIRROR.tick=setInterval(streamPump,800);
     if('requestVideoFrameCallback' in m){ try{ m.requestVideoFrameCallback(function(){
       MIRROR.mEl&&(MIRROR.mEl._gotFrame=true);
-      if(MIRROR.mode==='stream'&&MIRROR.on){ hideFreeze(); hidePoster(false); }   /* первый кадр потока на странице */
+      if(MIRROR.mode==='stream'&&MIRROR.on){ stgHide(false); }   /* 73: первый кадр потока на странице — маска уходит */
     }) }catch(e){} }
     setTimeout(function(){                          /* стрим не пошёл (экзотика) — chase-фолбэк */
       var mm=MIRROR.mEl;
@@ -9038,19 +8641,16 @@ function mirrorStart(){                            /* окно только чт
   updTitle();
 }
 function startChaseMirror(it,X){                   /* фолбэк: прежнее зеркало вторым декодером */
-  try{ hideFreeze() }catch(e){}                    /* 67: VL-3 — стоп-кадр момента входа в PiP не висит над chase-зеркалом
-    (в chase-ветке его никто не снимал — он навсегда перекрывал страницу поверх зеркала) */
   MIRROR.mode='chase';
   var Y=vStandby; X=X||vActive; it=it||(currentIdx>=0?items[currentIdx]:null);
   if(it&&!it.audio){
     var u=(it.kind==='url'||it.kind==='native'||it.kind==='x')?it.url:cachedUrl(it.id);
     if(u&&(Y._pid!==it.id||((Y.currentSrc||Y.src)!==u&&Y.src!==u))){
       Y._pid=it.id; Y._seekDone=false; Y.src=u; try{ Y.load() }catch(e){}
-      frameEpoch(Y);                             /* 31.3 */
     }
     if(Y.readyState>=2)try{ Y.currentTime=X.currentTime||0 }catch(e){}
     else if(Y.src){                                /* зеркало ещё грузится — страница под постером */
-      var psC=trueAspectPoster(it); if(psC)showPoster(psC);   /* 67: VL-7 */
+      var psC=maskSrcOf(it,openPosOf(it)); if(psC)showPoster(psC); else showPoster(null);   /* 73: без доказанного кадра — честный чёрный */
       once(Y,['loadedmetadata','error'],8000).then(function(ev){   /* 2.5: 'error' тоже будит — 404 не молотит 8с вхолостую */
         if(ev!=='loadedmetadata')return;
         if(MIRROR.on&&MIRROR.mode==='chase'&&vStandby===Y&&!X.seeking){ try{ Y.currentTime=X.currentTime||0 }catch(e){} }
@@ -9092,10 +8692,7 @@ function mirrorStop(){                             /* окно закрылос�
     var inMini=function(el){ return el&&el.parentNode&&el.parentNode.id==='miniThumb' };
     if(!inMini(vActive))vActive.style.visibility=curIsAudio()?'hidden':'';
     if(!inMini(vStandby))vStandby.style.visibility='hidden';
-  }catch(e){}
-  hideFreeze();
-  try{ if(vblankEl)vblankEl.style.backgroundImage='' }catch(e){}   /* 67: VL-2 — страница снова рисует активный элемент:
-    кадр в подложке больше не нужен, поля — чистый чёрный (не проступит при зуме/перезарядке) */
+  }catch(e){}   /* 73: слоёв-подложек/стоп-кадров больше нет — страница рисует только активный элемент */
   if(MINI.mode==='local'&&MINI.item&&!MINI.item.audio&&miniThumb&&!miniThumb.querySelector('video')){
     miniThumb.innerHTML='';                       /* 27h: окно закрылось в мини — вернуть живой кадр */
     try{ vActive.style.transform='' }catch(e){}
@@ -9144,8 +8741,8 @@ function miniMirrorSync(it){                       /* 26.5b/27.3: картинк
   miniIcon();
 }
 function mirrorTail(it,my,opts){                   /* 25.9: общий хвост зеркального открытия */
-  setVblank(it);                                   /* 30.1: подложка на цель PiP-переключения: старт
-                                                     потока/декодера прикрыт первым кадром, поля — чёрные */
+  stgMask(it,openPosOf(it));                       /* 30.1→73: маска на цель PiP-переключения: старт
+                                                     потока/декодера прикрыт (чёрный/доказанный кадр) */
   clearInterval(MIRROR.tick);
   MIRROR.tick=setInterval(MIRROR.mode==='stream'?streamPump:mirrorPump,MIRROR.mode==='stream'?800:250);
   applyAudio();                                    /* окно PiP — со звуком, зеркало молчит */
@@ -9224,14 +8821,8 @@ async function mirrorOpen(it,my,opts){             /* открытие/пере�
   try{ X.muted=true }catch(e){}                  /* кнопка play окна PiP не вернёт звук старого.
     Резервные пути снимают mute сами: пересадка — Y.muted=false, запасной — X.muted=false,
     applyAudio в mirrorTail доводит громкость по настройкам */
-  setVblank(it);                                 /* 32.2: подложка на цель СРАЗУ (ждала mirrorTail —
-    всё время загрузки держала картинку ПРОШЛОГО таргета). Под прозрачным Y/зеркалом
-    теперь кадр ЦЕЛИ с первой миллисекунды */
-  if(!it.audio){ var psA=trueAspectPoster(it); if(psA)showPoster(psA); else showPoster(null); }   /* 32.2→67: VL-7 —
-    непрозрачное превью цели НАД зеркалом (z4>z3): старый поток/декодер больше не
-    светится на странице; без кадра — чёрная маска (31.4). Снимается по кадру зеркала
-    (attach rVFC / mirrorPosterOff) — переход пик-в-пик, как в плеере */
-  else hidePoster(true);
+  stgMask(it,openPosOf(it));                     /* 32.2→73: маска на цель СРАЗУ — чёрный или доказанный первый кадр */
+  if(it.audio)stgHide(true);
   try{ if(MIRROR.mode==='stream'&&MIRROR.mEl)MIRROR.mEl.style.display='none' }catch(e){}   /* 32.2:
     старое зеркало-поток гасим до пересадки: его кадры — кадры старого X. Новое
     прикрепит attachMirrorStream(Y) и вернёт видимость (display='') */
@@ -9240,7 +8831,6 @@ async function mirrorOpen(it,my,opts){             /* открытие/пере�
       вернём в #stage — окно PiP не должно забирать картинку мини-панели; на потоке мини живёт своим <video> */
     try{ Y.pause() }catch(e){}
     Y._pid=it.id; Y._seekDone=false; Y.muted=true; Y.src=u; try{ Y.load() }catch(e){}
-    frameEpoch(Y);                               /* 31.3: та же эпоха для зеркальных ретаргетов */
     try{ await once(Y,['loadedmetadata','abort','error'],20000) }catch(e){}   /* 2.5: 404 отдаётся сразу, не 20с */
     if(my!==playToken){ if(MIRROR.swapTok===my)MIRROR.swapping=false; return; }   /* 32.3: сброс только владельцем */
     if(Y.error)throw 0;
@@ -9285,11 +8875,10 @@ async function mirrorOpen(it,my,opts){             /* открытие/пере�
       mirrorVis();                                 /* 29.1: X теперь запасной — скрыт на потоке,
                                                           виден в chase */
     }else{
-      if(!it.audio){ var psB=trueAspectPoster(it); if(psB)showPoster(psB); }   /* 26.5→67 (chase, VL-7): страница под постером,
+      if(!it.audio){ var psB=maskSrcOf(it,openPosOf(it)); if(psB)showPoster(psB); }   /* 26.5→73: страница под маской,
         пока перезагруженное зеркало декодирует кадр */
       X._pid=it.id;                                 /* зеркало перечитывает новый трек, позицию догонит mirrorPump */
       try{ X.src=u; X.load() }catch(e){}
-      frameEpoch(X);                               /* 31.3 */
     }
     mirrorTail(it,my,opts);
     setTimeout(function(){ if(MIRROR.swapTok===my)MIRROR.swapping=false },900);   /* страховка: leave-событие
@@ -9301,14 +8890,12 @@ async function mirrorOpen(it,my,opts){             /* открытие/пере�
   if(my!==playToken){                              /* 67: RC-104 — перебитый mirrorOpen НЕ ретаргетит играющий
     элемент и не перетирает подложку, уже выставленную новым открытием */
     try{ if(hudHoldId===it.id)hudHoldId=null }catch(e){} return; }
-  setVblank(it);               /* 30.1: подложка на цель ДО смены src: элемент на странице станет
-                                  прозрачным на время загрузки — под ним нужен кадр цели, не прошлый */
+  stgMask(it,openPosOf(it));   /* 30.1→73: маска на цель до смены src */
   X._pid=it.id; X._seekDone=false;
-  frameEpoch(X);                                   /* 31.3 */
   if(!X.paused)quietPause(X);                     /* 26.2: служебная пауза и здесь — UI не будим */
   try{ X.muted=false; }catch(e){}
   X.src=u; try{ X.load() }catch(e){}
-  if(!it.audio){ var psD=trueAspectPoster(it); if(psD)showPoster(psD); }   /* 26.5→67: запасной путь — то же прикрытие (VL-7) */
+  if(!it.audio){ var psD=maskSrcOf(it,openPosOf(it)); if(psD)showPoster(psD); }   /* 26.5→73: запасной путь — то же прикрытие */
   try{ await once(X,['loadedmetadata','abort','error'],20000) }catch(e){}   /* 2.5 */
   if(my!==playToken)return;
   var w2=wantOf(X);
@@ -9324,7 +8911,6 @@ async function mirrorOpen(it,my,opts){             /* открытие/пере�
     try{ Y.pause() }catch(e){}
     Y._pid=it.id; Y._seekDone=false;
     Y.muted=true; Y.src=u; try{ Y.load() }catch(e){}
-    frameEpoch(Y);                                 /* 31.3 */
     try{ await once(Y,['loadedmetadata','abort','error'],20000) }catch(e){}   /* 2.5 */
     if(my!==playToken)return;
   }
@@ -9420,15 +9006,14 @@ async function openPip(){
   if(it0&&!it0.audio&&vActive&&vActive.videoWidth&&vActive.src){
     /* ВИДЕО: окно рисует сам элемент — ноль покадровой работы на главном потоке */
     try{
-      if(!it0.audio)showFreeze(vActive);        /* 27.3: displacement опустошает бокс элемента на странице —
-        маска последнего кадра прикрывает до первого кадра потока */
+      if(!it0.audio)showPoster(null);           /* 27.3→73: страница прикрыта честным чёрным до первого кадра потока */
       await vActive.requestPictureInPicture();
       PIP.mode='on'; PIP.native=true; PIP.want=true;
       mirrorStart();
       if(MINI.mode==='local')miniMirrorSync(items[currentIdx]);   /* мини переключается на поток */
       updTitle();
       return true;
-    }catch(e){ PIP.native=false; PIP.mode='off'; hideFreeze(); return false; }
+    }catch(e){ PIP.native=false; PIP.mode='off'; return false; }
   }
   pipEnsure(); PIP.mode='on'; PIP.native=false; pipPaint();
   try{
@@ -11261,7 +10846,7 @@ try{
         for(var px=0;px<items.length;px++){ var pit=items[px],pp=pm[pit.id];
           if(!pp)continue;
           if(pp.thumb&&!pit.thumb){ pit.thumb=pp.thumb; any=true; }
-          if(pp.fframe&&(pp.fframeV||0)>=70&&(pp.fframePos||0)<=0.15&&!pit.fframe){ pit.fframe=pp.fframe; pit.fframeV=pp.fframeV; }   /* 72: восстановление только действительно первого кадра (≤0.15с; прежняя планка ≤3с пропускала отраву 0.6–3с) */
+          if(pp.fframe&&(pp.fframeV||0)>=73&&(pp.fframePos||0)<=0.05&&!pit.fframe){ pit.fframe=pp.fframe; pit.fframeV=pp.fframeV; pit.fframePos=pp.fframePos; }   /* 73: восстановление только штампованного v73 первого кадра (<=0.05с); всё, что писали v70-v72 — отрава по определению */
           if(pp.fthumb&&!pit.fthumb)pit.fthumb=pp.fthumb;
           if(pp.mcover&&!pit.mcover)pit.mcover=pp.mcover; }
         if(any){ stripSig=null; thumbRev++; renderSoon(); }
